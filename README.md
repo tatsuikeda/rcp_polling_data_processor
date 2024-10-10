@@ -48,7 +48,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
    ### macOS
    
-   Using Homebrew:
+   Using Homebrew: (See homebrew instructions at the bottom of this README)
    ```
    brew install --cask chromedriver
    ```
@@ -57,6 +57,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
    1. Open "System Preferences" > "Security & Privacy" > "General"
    2. Click the lock to make changes
    3. Click "Allow Anyway" next to the ChromeDriver message
+   4. On macOS, you may need to run `xattr -d com.apple.quarantine /usr/local/bin/chromedriver` if you encounter security issues
 
    ### Windows
 
@@ -87,6 +88,15 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
       ```
       sudo chmod +x /usr/local/bin/chromedriver
       ```
+
+
+## Troubleshooting
+
+If you encounter issues with ChromeDriver:
+
+1. Ensure your Chrome browser is up to date
+2. Verify that the ChromeDriver version matches your Chrome version
+3. Check that ChromeDriver is correctly added to your system PATH
 
 ## Usage
 
@@ -219,14 +229,46 @@ This uses the standard error formula for a proportion (1 / sqrt(n)) when sample 
 
 While this method provides a mathematically sound way to calculate probabilities based on polling data, it should be considered as one of many possible approaches to election forecasting. More sophisticated models might incorporate additional factors such as economic indicators, historical voting patterns, and demographic trends.
 
-## Troubleshooting
 
-If you encounter issues with ChromeDriver:
+## Installing Homebrew
 
-1. Ensure your Chrome browser is up to date
-2. Verify that the ChromeDriver version matches your Chrome version
-3. Check that ChromeDriver is correctly added to your system PATH
-4. On macOS, you may need to run `xattr -d com.apple.quarantine /usr/local/bin/chromedriver` if you encounter security issues
+To install Homebrew on your Mac, follow these steps:
+
+1. Open Terminal on your Mac.
+
+2. Install Xcode Command Line Tools by running:
+   ```
+   xcode-select --install
+   ```
+
+3. Install Homebrew by pasting the following command in Terminal:
+   ```
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+
+4. Follow the prompts in the Terminal to complete the installation.
+
+5. After installation, add Homebrew to your PATH:
+   - For Intel Macs:
+     ```
+     echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile
+     ```
+   - For Apple Silicon Macs:
+     ```
+     echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+     ```
+
+6. Reload your shell configuration:
+   ```
+   source ~/.zprofile
+   ```
+
+7. Verify the installation by running:
+   ```
+   brew --version
+   ```
+
+You should now have Homebrew installed and ready to use on your Mac.
 
 ## Note
 
