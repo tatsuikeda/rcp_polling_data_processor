@@ -13,3 +13,4 @@ ENV/
 
 # Miscellaneous
 .DS_Store
+*.csv
