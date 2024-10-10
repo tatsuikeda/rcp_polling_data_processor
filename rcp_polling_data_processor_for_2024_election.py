@@ -1,8 +1,17 @@
-import pandas as pd
-import numpy as np
+# Standard library imports
+import os
+import sys
+import time
 from datetime import datetime
+
+# Third-party imports
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
+import itertools
+
+# Selenium imports
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -10,9 +19,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import sys
-import os
-import time
 
 # Constants
 BATTLEGROUND_STATES = {
@@ -86,24 +92,7 @@ def fetch_polling_data(driver, state):
         # Create DataFrame
         df = pd.DataFrame(rows, columns=headers)
         
-        # Convert 'DATE' column to datetime
-        def parse_date(date_str):
-            if '-' in date_str:
-                start, end = date_str.split('-')
-                return pd.to_datetime(end.strip(), format='%m/%d')
-            else:
-                return pd.to_datetime(date_str, format='%m/%d')
-
-        df['DATE'] = df['DATE'].apply(parse_date)
-        
-        # Add year to dates (assuming all dates are in 2024)
-        df['DATE'] = df['DATE'].apply(lambda x: x.replace(year=2024))
-        
-        # Filter data since August 1, 2024
-        filtered_df = df[df['DATE'] >= HARRIS_ENTRY_DATE]
-        print(f"Number of rows after filtering: {len(filtered_df)}")
-        
-        return filtered_df
+        return df
     except Exception as e:
         print(f"Error fetching data for {state}: {e}")
         return None
@@ -154,6 +143,27 @@ def process_state_data(df):
     print("Initial DataFrame columns:", df.columns)
     print("Sample of initial data:")
     print(df.head())
+
+    # Convert 'DATE' column to datetime
+    def parse_date(date_str):
+        if '-' in date_str:
+            start, end = date_str.split('-')
+            return pd.to_datetime(end.strip(), format='%m/%d')
+        else:
+            return pd.to_datetime(date_str, format='%m/%d')
+
+    df['DATE'] = df['DATE'].apply(parse_date)
+    
+    # Add the current year to all dates
+    current_year = datetime.now().year
+    df['DATE'] = df['DATE'].apply(lambda x: x.replace(year=current_year))
+    
+    # Filter out future dates
+    today = datetime.now().date()
+    df = df[df['DATE'].dt.date <= today]
+    
+    # Sort the DataFrame by date in descending order
+    df = df.sort_values('DATE', ascending=False)
 
     latest_date = df['DATE'].max()
     df['DaysSincePoll'] = (latest_date - df['DATE']).dt.days
@@ -226,26 +236,111 @@ def aggregate_state_results(df):
     harris_avg = (df['HARRIS_ADJ'] * df['CombinedWeight']).sum() / total_weight
     return trump_avg, harris_avg
 
-def monte_carlo_simulation(df, n_simulations=100000):
+import numpy as np
+
+def monte_carlo_simulation(df, n_simulations=10000, convergence_threshold=0.001):
     if df is None or df.empty:
         return None, (None, None)
 
+    weights = df['CombinedWeight'].values
+    trump_adj = df['TRUMP_ADJ'].values
+    harris_adj = df['HARRIS_ADJ'].values
+    moe = df['MOE'].values
+
     results = []
-    for _ in range(n_simulations):
-        try:
-            sample = df.sample(n=len(df), replace=True, weights='CombinedWeight')
-            trump_adj = sample['TRUMP_ADJ'] + np.random.normal(0, sample['MOE'] / 2)
-            harris_adj = sample['HARRIS_ADJ'] + np.random.normal(0, sample['MOE'] / 2)
-            results.append(trump_adj.mean() - harris_adj.mean())
-        except ValueError as e:
-            print(f"Warning: Error in Monte Carlo simulation - {e}")
-            continue
-    
-    if not results:
-        print("Warning: No valid results from Monte Carlo simulation.")
-        return None, (None, None)
-    
+    running_mean = 0
+    for i in range(1, n_simulations + 1):
+        sample_indices = np.random.choice(len(df), size=len(df), p=weights/weights.sum())
+        trump_sample = trump_adj[sample_indices] + np.random.normal(0, moe[sample_indices] / 2)
+        harris_sample = harris_adj[sample_indices] + np.random.normal(0, moe[sample_indices] / 2)
+        result = np.mean(trump_sample - harris_sample)
+        results.append(result)
+        
+        new_mean = np.mean(results)
+        if i > 1000 and abs(new_mean - running_mean) < convergence_threshold:
+            print(f"Converged after {i} simulations")
+            break
+        running_mean = new_mean
+
     return np.mean(results), np.percentile(results, [2.5, 97.5])
+
+def calculate_electoral_college(battleground_results):
+   # Hard-coded EC votes based on 2024 allocation
+    safe_ec = {
+        'Trump': 215,
+        'Harris': 227
+    }
+    
+    battleground_ec = {
+        'Arizona': 11, 'Georgia': 16, 'Michigan': 15, 
+        'North Carolina': 16, 'Pennsylvania': 19, 'Wisconsin': 10
+    }
+    
+    me_ne_ec = {
+        'Maine': {'statewide': 2, 'ME-1': 1, 'ME-2': 1},
+        'Nebraska': {'statewide': 2, 'NE-1': 1, 'NE-2': 1, 'NE-3': 1}
+    }
+    
+    safe_ec['Harris'] += me_ne_ec['Maine']['statewide'] + me_ne_ec['Maine']['ME-1']
+    safe_ec['Trump'] += me_ne_ec['Nebraska']['statewide'] + me_ne_ec['Nebraska']['NE-1'] + me_ne_ec['Nebraska']['NE-3']
+    
+    swing_districts = {'ME-2': 1, 'NE-2': 1}
+    
+    # Calculate most likely EC count and state probabilities
+    most_likely_ec = safe_ec.copy()
+    state_probabilities = {}
+    for state, votes in battleground_ec.items():
+        if state in battleground_results:
+            mean_diff = battleground_results[state]['MeanDiff']
+            ci = battleground_results[state]['CI']
+            std_dev = (ci[1] - ci[0]) / (2 * 1.96)  # Assuming 95% CI
+            z_score = mean_diff / std_dev
+            trump_prob = 1 - stats.norm.cdf(z_score)
+            state_probabilities[state] = trump_prob
+            
+            if mean_diff > 0:
+                most_likely_ec['Trump'] += votes
+            else:
+                most_likely_ec['Harris'] += votes
+        else:
+            # If no polling data, use 2020 results
+            if state in ['Arizona', 'Georgia', 'Michigan', 'Pennsylvania', 'Wisconsin']:
+                most_likely_ec['Harris'] += votes
+                state_probabilities[state] = 0.5  # Assume 50-50 if no data
+            else:
+                most_likely_ec['Trump'] += votes
+                state_probabilities[state] = 0.5  # Assume 50-50 if no data
+    
+    # Allocate swing districts based on 2020 results
+    most_likely_ec['Trump'] += swing_districts['ME-2']
+    most_likely_ec['Harris'] += swing_districts['NE-2']
+    
+    # Calculate overall probability
+    scenarios = [[0, 1]] * len(battleground_ec)
+    total_probability = 0
+    for scenario in itertools.product(*scenarios):
+        scenario_ec = safe_ec.copy()
+        scenario_prob = 1
+        for i, (state, votes) in enumerate(battleground_ec.items()):
+            if scenario[i] == 0:  # Trump wins
+                scenario_ec['Trump'] += votes
+                scenario_prob *= state_probabilities[state]
+            else:  # Harris wins
+                scenario_ec['Harris'] += votes
+                scenario_prob *= (1 - state_probabilities[state])
+        
+        if scenario_ec['Trump'] > 269:
+            total_probability += scenario_prob
+    
+    trump_probability = total_probability * 100
+    harris_probability = (1 - total_probability) * 100
+    
+    return {
+        'Trump': most_likely_ec['Trump'],
+        'Harris': most_likely_ec['Harris'],
+        'TrumpProbability': trump_probability,
+        'HarrisProbability': harris_probability
+    }
 
 def main():
     try:
@@ -255,21 +350,13 @@ def main():
         return
 
     all_results = {}
+    total_states = len(BATTLEGROUND_STATES)
     
     try:
-        for state, url_state in BATTLEGROUND_STATES.items():
-            print(f"Processing {state}...")
+        for index, (state, url_state) in enumerate(BATTLEGROUND_STATES.items(), 1):
+            print(f"Processing {state}... ({index}/{total_states})")
             df = fetch_polling_data(driver, url_state)
             if df is not None:
-                print("Raw data fetched:")
-                print(df.to_string())
-                
-                # Print sample weights for each poll
-                print("\nSample weights for each poll:")
-                for _, row in df.iterrows():
-                    weight = sample_size_weight(row['SAMPLE'], row['MOE'])
-                    print(f"Pollster: {row['POLLSTER']}, Sample: {row['SAMPLE']}, MOE: {row['MOE']}, Weight: {weight}")
-                
                 processed_df = process_state_data(df)
                 if processed_df is not None:
                     trump_avg, harris_avg = aggregate_state_results(processed_df)
@@ -311,6 +398,21 @@ def main():
         else:
             print("  Unable to calculate averages.")
         print()
+    
+    # Calculate Electoral College results
+    ec_results = calculate_electoral_college(all_results)
+    print("\nElectoral College Projection:")
+    print(f"Trump: {ec_results['Trump']} electoral votes")
+    print(f"Harris: {ec_results['Harris']} electoral votes")
+    print(f"Probability of Trump victory: {ec_results['TrumpProbability']:.2f}%")
+    print(f"Probability of Harris victory: {ec_results['HarrisProbability']:.2f}%")
+
+    # Verify total EC votes
+    total_ec = ec_results['Trump'] + ec_results['Harris']
+    if total_ec != 538:
+        print(f"Warning: Total EC votes ({total_ec}) do not add up to 538.")
+    else:
+        print("Total EC votes correctly sum to 538.")
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 # RCP Polling Data Processor
 
-This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results and performs Monte Carlo simulations to estimate uncertainties in the polling data.
+This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results and calculates probabilities based on confidence intervals.
 
 ## Author
 
@@ -148,26 +148,51 @@ harris_avg = (df['HARRIS_ADJ'] * df['CombinedWeight']).sum() / total_weight
 
 Where `CombinedWeight` is the product of time and sample size weights.
 
-### 5. Monte Carlo Simulation
+### 5. Confidence Interval-based Probability Calculation
 
-We use Monte Carlo simulation to estimate the uncertainty in our poll aggregation:
+We use the confidence intervals from aggregated polling data to calculate the probability of each candidate winning a state:
 
 ```python
-for _ in range(n_simulations):
-    sample = df.sample(n=len(df), replace=True, weights='CombinedWeight')
-    trump_adj = sample['TRUMP_ADJ'] + np.random.normal(0, sample['MOE'] / 2)
-    harris_adj = sample['HARRIS_ADJ'] + np.random.normal(0, sample['MOE'] / 2)
-    results.append(trump_adj.mean() - harris_adj.mean())
+mean_diff = battleground_results[state]['MeanDiff']
+ci = battleground_results[state]['CI']
+std_dev = (ci[1] - ci[0]) / (2 * 1.96)  # Assuming 95% CI
+z_score = mean_diff / std_dev
+trump_prob = 1 - stats.norm.cdf(z_score)
 ```
 
-This process:
-- Resamples the polls with replacement (bootstrap)
-- Adds random noise based on each poll's margin of error (MOE)
-- Calculates the difference between candidates for each simulation
+This method:
+- Calculates the standard deviation based on the confidence interval
+- Computes a z-score for the mean difference
+- Uses the cumulative distribution function of the normal distribution to determine the probability
 
-The mean and percentiles of these simulation results give us an estimate of the expected difference and its confidence interval.
+### 6. Overall Victory Probability Calculation
 
-### 6. Margin of Error Estimation
+We calculate the overall probability of victory by considering all possible combinations of state outcomes:
+
+```python
+scenarios = [[0, 1]] * len(battleground_ec)
+total_probability = 0
+for scenario in itertools.product(*scenarios):
+    scenario_ec = safe_ec.copy()
+    scenario_prob = 1
+    for i, (state, votes) in enumerate(battleground_ec.items()):
+        if scenario[i] == 0:  # Trump wins
+            scenario_ec['Trump'] += votes
+            scenario_prob *= state_probabilities[state]
+        else:  # Harris wins
+            scenario_ec['Harris'] += votes
+            scenario_prob *= (1 - state_probabilities[state])
+    
+    if scenario_ec['Trump'] > 269:
+        total_probability += scenario_prob
+```
+
+This approach:
+- Generates all possible combinations of state outcomes
+- Calculates the probability of each scenario
+- Sums the probabilities of all scenarios where a candidate wins
+
+### 7. Margin of Error Estimation
 
 For polls missing MOE data, we estimate it based on the sample size:
 
@@ -185,12 +210,14 @@ This uses the standard error formula for a proportion (1 / sqrt(n)) when sample 
 
 ### Limitations and Assumptions
 
+- The confidence interval-based probability calculation assumes normally distributed polling errors.
+- This model treats state outcomes as independent, which may not reflect real-world correlations between states.
+- The method doesn't account for systematic polling errors or "unknown unknowns" that could affect all polls similarly.
+- This approach is sensitive to the accuracy of the reported confidence intervals and may not capture all sources of uncertainty in polling.
 - The time decay and sample size weighting methods are simplifications and may not capture all factors affecting poll reliability.
 - The undecided voter allocation model is a simple heuristic and may not accurately reflect real voting behavior.
-- The Monte Carlo simulation assumes normally distributed errors, which may not always be the case in real polling.
-- This model doesn't account for correlations between states or systematic polling errors.
 
-These methods provide a reasonable approximation for poll aggregation and uncertainty estimation, but they should not be considered as accurate as more sophisticated election forecasting models.
+While this method provides a mathematically sound way to calculate probabilities based on polling data, it should be considered as one of many possible approaches to election forecasting. More sophisticated models might incorporate additional factors such as economic indicators, historical voting patterns, and demographic trends.
 
 ## Troubleshooting
 
