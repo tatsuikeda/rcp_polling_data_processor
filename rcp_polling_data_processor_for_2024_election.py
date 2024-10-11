@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+import re
 from datetime import datetime
 
 # Third-party imports
@@ -322,7 +323,11 @@ def calculate_electoral_college(battleground_results):
         'HarrisProbability': harris_probability
     }
 
-def visualize_battleground_states(battleground_results):
+def clean_state_name(state):
+    # Remove anything in parentheses and strip whitespace
+    return re.sub(r'\s*\([^)]*\)', '', state).strip()
+
+def visualize_battleground_states(battleground_results, ec_results):
     # Prepare data
     states = []
     mean_diffs = []
@@ -331,12 +336,12 @@ def visualize_battleground_states(battleground_results):
     ec_votes = []
 
     for state, data in battleground_results.items():
-        states.append(state)
+        states.append(clean_state_name(state))
         mean_diffs.append(data['MeanDiff'])
         ci = data['CI']
         confidence_intervals.append((ci[1] - ci[0]) / 2)  # Use half the CI for error bars
         colors.append('red' if data['MeanDiff'] > 0 else 'blue')
-        ec_votes.append(BATTLEGROUND_STATES[state])  # Use the existing BATTLEGROUND_STATES dictionary
+        ec_votes.append(BATTLEGROUND_STATES[state])
 
     # Sort states by absolute mean difference
     sorted_indices = np.argsort(np.abs(mean_diffs))[::-1]
@@ -358,7 +363,8 @@ def visualize_battleground_states(battleground_results):
     ax.set_yticklabels([f"{state} ({votes})" for state, votes in zip(states, ec_votes)])
     ax.invert_yaxis()  # Labels read top-to-bottom
     ax.set_xlabel('Mean Difference (%)')
-    ax.set_title('Battleground States Polling Analysis')
+    ax.set_title('Battleground States Polling Analysis\n'
+                 'Error bars represent 95% Confidence Interval')
 
     # Add a vertical line at x=0
     ax.axvline(x=0, color='k', linestyle='--')
@@ -367,9 +373,19 @@ def visualize_battleground_states(battleground_results):
     ax.text(max(mean_diffs), len(states), 'Trump Lead', ha='right', va='bottom', color='red')
     ax.text(min(mean_diffs), len(states), 'Harris Lead', ha='left', va='bottom', color='blue')
 
+    # Add EC projection and victory probabilities
+    ec_text = f"Electoral College Projection:\n" \
+              f"Trump: {ec_results['Trump']} votes\n" \
+              f"Harris: {ec_results['Harris']} votes\n\n" \
+              f"Victory Probabilities:\n" \
+              f"Trump: {ec_results['TrumpProbability']:.2f}%\n" \
+              f"Harris: {ec_results['HarrisProbability']:.2f}%"
+    
+    plt.text(1.05, 0.5, ec_text, transform=ax.transAxes, fontsize=10, verticalalignment='center')
+
     # Adjust layout and display
     plt.tight_layout()
-    plt.show()
+    plt.show(block=True)
 
 def main():
     try:
@@ -428,9 +444,6 @@ def main():
             print("  Unable to calculate averages.")
         print()
     
-    # Visualize the battleground states
-    visualize_battleground_states(all_results)
-    
     # Calculate Electoral College results
     ec_results = calculate_electoral_college(all_results)
     print("\nElectoral College Projection:")
@@ -438,6 +451,9 @@ def main():
     print(f"Harris: {ec_results['Harris']} electoral votes")
     print(f"Probability of Trump victory: {ec_results['TrumpProbability']:.2f}%")
     print(f"Probability of Harris victory: {ec_results['HarrisProbability']:.2f}%")
+
+    # Visualize the battleground states (moved to the end and now passing ec_results)
+    visualize_battleground_states(all_results, ec_results)
 
 if __name__ == "__main__":
     main()
