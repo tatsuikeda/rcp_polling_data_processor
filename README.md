@@ -1,6 +1,6 @@
 # RCP Polling Data Processor
 
-This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results and calculates probabilities based on confidence intervals.
+This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results, calculates probabilities based on confidence intervals, and provides a visual representation of the polling analysis.
 
 ## Author
 
@@ -89,15 +89,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
       sudo chmod +x /usr/local/bin/chromedriver
       ```
 
-
-## Troubleshooting
-
-If you encounter issues with ChromeDriver:
-
-1. Ensure your Chrome browser is up to date
-2. Verify that the ChromeDriver version matches your Chrome version
-3. Check that ChromeDriver is correctly added to your system PATH
-
 ## Usage
 
 To run the script, ensure your virtual environment is activated, then execute:
@@ -106,7 +97,24 @@ To run the script, ensure your virtual environment is activated, then execute:
 python rcp_polling_data_processor_for_2024_election.py
 ```
 
-The script will fetch polling data for battleground states, process it, and output a summary of polling results for each state.
+The script will:
+1. Fetch polling data for battleground states
+2. Process and analyze the data
+3. Display a visualization of the battleground states polling analysis
+4. Output a summary of polling results for each state
+5. Provide an Electoral College projection
+
+## Visualization
+
+The script now includes a visualization of the battleground states polling analysis. This feature:
+
+- Displays a horizontal bar chart showing the mean difference in polling between candidates for each battleground state
+- Uses color coding (red for Trump lead, blue for Harris lead) to easily distinguish which candidate is leading in each state
+- Includes error bars to represent the confidence intervals of the polling data
+- Orders states from largest lead to smallest, regardless of the leading candidate
+- Provides a clear visual representation of the current state of the race in key battleground states
+
+The visualization appears after the data processing and before the final Electoral College projection.
 
 ## Mathematical and Statistical Methods
 
@@ -229,6 +237,14 @@ This uses the standard error formula for a proportion (1 / sqrt(n)) when sample 
 
 While this method provides a mathematically sound way to calculate probabilities based on polling data, it should be considered as one of many possible approaches to election forecasting. More sophisticated models might incorporate additional factors such as economic indicators, historical voting patterns, and demographic trends.
 
+## Troubleshooting
+
+If you encounter issues with ChromeDriver:
+
+1. Ensure your Chrome browser is up to date
+2. Verify that the ChromeDriver version matches your Chrome version
+3. Check that ChromeDriver is correctly added to your system PATH
+4. On macOS, you may need to run `xattr -d com.apple.quarantine /usr/local/bin/chromedriver` if you encounter security issues
 
 ## Installing Homebrew
 

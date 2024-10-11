@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 import itertools
+import matplotlib.pyplot as plt
 
 # Selenium imports
 from selenium import webdriver
@@ -27,7 +28,8 @@ BATTLEGROUND_STATES = {
     'Georgia': 'georgia',
     'Wisconsin': 'wisconsin',
     'Michigan': 'michigan',
-    'Arizona': 'arizona'
+    'Arizona': 'arizona',
+    'Nevada': 'nevada'
 }
 BASE_URL = 'https://www.realclearpolling.com/polls/president/general/2024/'
 HARRIS_ENTRY_DATE = datetime(2024, 8, 1)
@@ -236,8 +238,6 @@ def aggregate_state_results(df):
     harris_avg = (df['HARRIS_ADJ'] * df['CombinedWeight']).sum() / total_weight
     return trump_avg, harris_avg
 
-import numpy as np
-
 def monte_carlo_simulation(df, n_simulations=10000, convergence_threshold=0.001):
     if df is None or df.empty:
         return None, (None, None)
@@ -265,29 +265,18 @@ def monte_carlo_simulation(df, n_simulations=10000, convergence_threshold=0.001)
     return np.mean(results), np.percentile(results, [2.5, 97.5])
 
 def calculate_electoral_college(battleground_results):
-   # Hard-coded EC votes based on 2024 allocation
-    safe_ec = {
-        'Trump': 215,
-        'Harris': 227
+    # Start with the correct base counts
+    ec_votes = {
+        'Trump': 219,
+        'Harris': 226
     }
     
+    # Battleground states
     battleground_ec = {
         'Arizona': 11, 'Georgia': 16, 'Michigan': 15, 
-        'North Carolina': 16, 'Pennsylvania': 19, 'Wisconsin': 10
+        'Nevada': 6, 'North Carolina': 16, 'Pennsylvania': 19, 'Wisconsin': 10
     }
     
-    me_ne_ec = {
-        'Maine': {'statewide': 2, 'ME-1': 1, 'ME-2': 1},
-        'Nebraska': {'statewide': 2, 'NE-1': 1, 'NE-2': 1, 'NE-3': 1}
-    }
-    
-    safe_ec['Harris'] += me_ne_ec['Maine']['statewide'] + me_ne_ec['Maine']['ME-1']
-    safe_ec['Trump'] += me_ne_ec['Nebraska']['statewide'] + me_ne_ec['Nebraska']['NE-1'] + me_ne_ec['Nebraska']['NE-3']
-    
-    swing_districts = {'ME-2': 1, 'NE-2': 1}
-    
-    # Calculate most likely EC count and state probabilities
-    most_likely_ec = safe_ec.copy()
     state_probabilities = {}
     for state, votes in battleground_ec.items():
         if state in battleground_results:
@@ -296,51 +285,91 @@ def calculate_electoral_college(battleground_results):
             std_dev = (ci[1] - ci[0]) / (2 * 1.96)  # Assuming 95% CI
             z_score = mean_diff / std_dev
             trump_prob = 1 - stats.norm.cdf(z_score)
-            state_probabilities[state] = trump_prob
+            state_probabilities[state] = {'Trump': trump_prob, 'Harris': 1 - trump_prob}
             
+            # Allocate EC votes based on polling data
             if mean_diff > 0:
-                most_likely_ec['Trump'] += votes
+                ec_votes['Trump'] += votes
             else:
-                most_likely_ec['Harris'] += votes
+                ec_votes['Harris'] += votes
         else:
-            # If no polling data, use 2020 results
-            if state in ['Arizona', 'Georgia', 'Michigan', 'Pennsylvania', 'Wisconsin']:
-                most_likely_ec['Harris'] += votes
-                state_probabilities[state] = 0.5  # Assume 50-50 if no data
-            else:
-                most_likely_ec['Trump'] += votes
-                state_probabilities[state] = 0.5  # Assume 50-50 if no data
-    
-    # Allocate swing districts based on 2020 results
-    most_likely_ec['Trump'] += swing_districts['ME-2']
-    most_likely_ec['Harris'] += swing_districts['NE-2']
-    
+            print(f"Warning: No polling data for {state}")
+            state_probabilities[state] = {'Trump': 0.5, 'Harris': 0.5}  # Assume 50-50 if no data
+
     # Calculate overall probability
-    scenarios = [[0, 1]] * len(battleground_ec)
-    total_probability = 0
-    for scenario in itertools.product(*scenarios):
-        scenario_ec = safe_ec.copy()
-        scenario_prob = 1
+    scenarios = list(itertools.product([0, 1], repeat=len(battleground_ec)))
+    trump_wins = 0
+    total_scenarios = len(scenarios)
+
+    for scenario in scenarios:
+        scenario_ec = {'Trump': 219, 'Harris': 226}  # Start from base counts for each scenario
         for i, (state, votes) in enumerate(battleground_ec.items()):
-            if scenario[i] == 0:  # Trump wins
+            if scenario[i] == 0:  # Trump wins state
                 scenario_ec['Trump'] += votes
-                scenario_prob *= state_probabilities[state]
-            else:  # Harris wins
+            else:  # Harris wins state
                 scenario_ec['Harris'] += votes
-                scenario_prob *= (1 - state_probabilities[state])
         
         if scenario_ec['Trump'] > 269:
-            total_probability += scenario_prob
-    
-    trump_probability = total_probability * 100
-    harris_probability = (1 - total_probability) * 100
-    
+            trump_wins += 1
+
+    trump_probability = (trump_wins / total_scenarios) * 100
+    harris_probability = 100 - trump_probability
+
     return {
-        'Trump': most_likely_ec['Trump'],
-        'Harris': most_likely_ec['Harris'],
+        'Trump': ec_votes['Trump'],
+        'Harris': ec_votes['Harris'],
         'TrumpProbability': trump_probability,
         'HarrisProbability': harris_probability
     }
+
+def visualize_battleground_states(battleground_results):
+    # Prepare data
+    states = []
+    mean_diffs = []
+    confidence_intervals = []
+    colors = []
+    ec_votes = []
+
+    for state, data in battleground_results.items():
+        states.append(state)
+        mean_diffs.append(data['MeanDiff'])
+        ci = data['CI']
+        confidence_intervals.append((ci[1] - ci[0]) / 2)  # Use half the CI for error bars
+        colors.append('red' if data['MeanDiff'] > 0 else 'blue')
+        ec_votes.append(BATTLEGROUND_STATES[state])  # Use the existing BATTLEGROUND_STATES dictionary
+
+    # Sort states by absolute mean difference
+    sorted_indices = np.argsort(np.abs(mean_diffs))[::-1]
+    states = [states[i] for i in sorted_indices]
+    mean_diffs = [mean_diffs[i] for i in sorted_indices]
+    confidence_intervals = [confidence_intervals[i] for i in sorted_indices]
+    colors = [colors[i] for i in sorted_indices]
+    ec_votes = [ec_votes[i] for i in sorted_indices]
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    y_pos = np.arange(len(states))
+    ax.barh(y_pos, mean_diffs, align='center', color=colors, alpha=0.8)
+    ax.errorbar(mean_diffs, y_pos, xerr=confidence_intervals, fmt='none', ecolor='gray', capsize=5)
+
+    # Customizing the plot
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([f"{state} ({votes})" for state, votes in zip(states, ec_votes)])
+    ax.invert_yaxis()  # Labels read top-to-bottom
+    ax.set_xlabel('Mean Difference (%)')
+    ax.set_title('Battleground States Polling Analysis')
+
+    # Add a vertical line at x=0
+    ax.axvline(x=0, color='k', linestyle='--')
+
+    # Add labels for Trump and Harris
+    ax.text(max(mean_diffs), len(states), 'Trump Lead', ha='right', va='bottom', color='red')
+    ax.text(min(mean_diffs), len(states), 'Harris Lead', ha='left', va='bottom', color='blue')
+
+    # Adjust layout and display
+    plt.tight_layout()
+    plt.show()
 
 def main():
     try:
@@ -399,6 +428,9 @@ def main():
             print("  Unable to calculate averages.")
         print()
     
+    # Visualize the battleground states
+    visualize_battleground_states(all_results)
+    
     # Calculate Electoral College results
     ec_results = calculate_electoral_college(all_results)
     print("\nElectoral College Projection:")
@@ -406,13 +438,6 @@ def main():
     print(f"Harris: {ec_results['Harris']} electoral votes")
     print(f"Probability of Trump victory: {ec_results['TrumpProbability']:.2f}%")
     print(f"Probability of Harris victory: {ec_results['HarrisProbability']:.2f}%")
-
-    # Verify total EC votes
-    total_ec = ec_results['Trump'] + ec_results['Harris']
-    if total_ec != 538:
-        print(f"Warning: Total EC votes ({total_ec}) do not add up to 538.")
-    else:
-        print("Total EC votes correctly sum to 538.")
 
 if __name__ == "__main__":
     main()
