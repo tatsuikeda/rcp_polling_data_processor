@@ -487,152 +487,237 @@ def calculate_electoral_votes(
         'Recount_Probability': recount_zone
     }
 
-
 def visualize_results(
     state_results: Dict[str, Dict[str, float]], 
     ev_results: Dict[str, float]
 ):
-    """Create enhanced visualization of results using only matplotlib."""
-    # Set style
-    plt.style.use('fivethirtyeight')
+    """Create mobile-friendly visualization of election results."""
+    # Import needed for KDE
+    from scipy.stats import gaussian_kde
     
-    # Create figure with adjusted proportions
-    fig = plt.figure(figsize=(15, 15))
-    gs = plt.GridSpec(3, 1, height_ratios=[3, 1, 0.2], hspace=0.4)  # Increased hspace
-    plt.subplots_adjust(left=0.25)
+    # State abbreviations dictionary
+    STATE_ABBREV = {
+        'Pennsylvania': 'PA',
+        'Michigan': 'MI',
+        'Wisconsin': 'WI',
+        'Georgia': 'GA',
+        'Arizona': 'AZ',
+        'Nevada': 'NV',
+        'North Carolina': 'NC'
+    }
     
-    # Top plot - State margins
+    # Set style and colors
+    plt.style.use('seaborn-v0_8-whitegrid')
+    colors = {
+        'trump': '#FF4136',      # Bright red
+        'trump_light': '#FF7A73', # Light red
+        'harris': '#0074D9',     # Bright blue
+        'harris_light': '#7FDBFF', # Light blue
+        'neutral': '#2F4F4F',    # Dark slate gray
+        'grid': '#E6E6E6'        # Light gray
+    }
+    
+    # Increased figure width-to-height ratio for better mobile viewing
+    fig = plt.figure(figsize=(12, 24))
+    gs = plt.GridSpec(4, 1, height_ratios=[5, 2, 1, 0.3], hspace=0.6)
+    
+    # Top plot - State margins with enhanced styling
     ax1 = fig.add_subplot(gs[0])
     
-    # Sort states by absolute margin
+    # Sort states by margin magnitude
     states = sorted(state_results.keys(), 
-                   key=lambda x: abs(state_results[x]['MeanMargin']),
-                   reverse=True)
+                   key=lambda x: abs(state_results[x]['MeanMargin']))
     margins = [state_results[state]['MeanMargin'] for state in states]
     errors = [(state_results[state]['CI'][1] - state_results[state]['CI'][0])/2 
               for state in states]
     
-    # Plot bars and error bars
-    y_pos = np.arange(len(states))
-    bars = ax1.barh(y_pos, margins, align='center', 
-                    color=['red' if m > 0 else 'blue' for m in margins],
-                    alpha=0.6, height=0.5)
+    # Increase spacing between bars
+    y_pos = np.arange(len(states)) * 1.5
     
-    # Add CI error bars with caps
+    # Create bars with gradient effect
+    for i, margin in enumerate(margins):
+        color = colors['trump'] if margin > 0 else colors['harris']
+        light_color = colors['trump_light'] if margin > 0 else colors['harris_light']
+        
+        bar = ax1.barh(y_pos[i], margin, align='center', 
+                      color=color, alpha=0.7, height=0.8,
+                      edgecolor='none')
+        
+        if margin != 0:
+            ax1.barh(y_pos[i], margin * 0.95, align='center',
+                    color=light_color, alpha=0.3, height=0.8,
+                    edgecolor='none')
+    
+    # Add sophisticated error bars
     error_bars = ax1.errorbar(margins, y_pos, xerr=errors, fmt='none',
-                             color='darkgray', capsize=5, capthick=2.0,
-                             elinewidth=2.0, label='95% Confidence Interval',
-                             zorder=3)
+                             color=colors['neutral'], capsize=7, capthick=2,
+                             elinewidth=2, alpha=0.6)
     
-    # Add CI numbers at ends of error bars
-    for i, state in enumerate(states):
-        result = state_results[state]
-        # Add left CI number
-        ax1.text(result['CI'][0] - 0.1, y_pos[i], 
-                f"{result['CI'][0]:.1f}", 
-                ha='right', va='center', 
-                fontsize=11)
-        # Add right CI number
-        ax1.text(result['CI'][1] + 0.1, y_pos[i], 
-                f"{result['CI'][1]:.1f}", 
-                ha='left', va='center', 
-                fontsize=11)
-    
-    # Create state labels with EVs and probabilities - standardized spacing
+    # Create state labels with abbreviations
     labels = []
-    for state in states:
-        ev = BATTLEGROUND_STATES[state]['ev']
-        label = f"{state:<15} ({ev} EV)"  # Fixed width for state names
-        labels.append(label)
-    
-    # Add leading candidate probabilities on the left side - adjusted spacing
     for i, state in enumerate(states):
+        ev = BATTLEGROUND_STATES[state]['ev']
         prob = state_results[state]['TrumpProb']
         prob_pct = prob if prob >= 0.5 else (1-prob)
         candidate = "Trump" if prob >= 0.5 else "Harris"
-        leading_text = f"{prob_pct*100:.0f}% {candidate}"
-        ax1.text(-max(abs(min(margins)), abs(max(margins)))*1.1, 
-                 y_pos[i] + 0.15,  # Slight upward adjustment
-                 leading_text, 
-                 ha='right', 
-                 va='center',
-                 fontsize=12)
-    
-    # Add margin values at end of bars
-    for i, margin in enumerate(margins):
-        ax1.text(margin + (0.1 if margin > 0 else -0.1),
-                y_pos[i],
-                f"{margin:+.1f}%",
-                va='center',
+        
+        # Add state abbreviation to label
+        label = f"{state} ({STATE_ABBREV[state]})\n{ev} EV\n{prob_pct*100:.0f}% {candidate}"
+        labels.append(label)
+        
+        # Add margin values and CI numbers
+        margin = margins[i]
+        text_color = 'black'
+        
+        # Add CI numbers
+        ax1.text(state_results[state]['CI'][0] - 0.2, y_pos[i] + 0.3,
+                f"{state_results[state]['CI'][0]:+.1f}", 
+                ha='right', va='bottom',
+                color=text_color, fontsize=14)
+        
+        ax1.text(state_results[state]['CI'][1] + 0.2, y_pos[i] + 0.3,
+                f"{state_results[state]['CI'][1]:+.1f}", 
+                ha='left', va='bottom',
+                color=text_color, fontsize=14)
+        
+        # Add mean margin
+        ax1.text(margin + (0.2 if margin > 0 else -0.2), y_pos[i] + 0.3,
+                f"{margin:+.1f}%", va='bottom',
                 ha='left' if margin > 0 else 'right',
-                fontsize=12)
+                color=text_color, fontweight='bold', fontsize=14)
     
-    # Customize top plot
+    # Customize top plot styling
     ax1.set_yticks(y_pos)
-    ax1.set_yticklabels(labels, fontsize=12)
-    ax1.tick_params(axis='y', pad=20)
-    ax1.axvline(x=0, color='black', linestyle='-', alpha=0.3)
-    ax1.set_title('2024 Battleground State Polling Margins, 95% C.I.', 
-                  pad=20, fontsize=18)
+    ax1.set_yticklabels(labels, fontsize=14)
+    ax1.tick_params(axis='both', which='major', labelsize=12)
     
-    # Adjust xlabel position to prevent overlap
-    ax1.set_xlabel('Margin (+ Trump Lead, - Harris Lead)', fontsize=14)
-    ax1.xaxis.set_label_coords(0.5, -0.15)  # Moved down further
+    # Add zero line
+    ax1.axvline(x=0, color=colors['neutral'], linestyle='-', 
+                linewidth=1.5, alpha=0.3, zorder=1)
     
-    # Set symmetric x-axis limits with space for error bars but not too wide
-    max_abs_margin = max(abs(min(margins)), abs(max(margins)))
-    max_abs_error = max(errors)
-    ax1.set_xlim(-max_abs_margin*1.15 - max_abs_error, max_abs_margin*1.15 + max_abs_error)
+    ax1.set_title('2024 Battleground State Polling Margins\nwith 95% Confidence Intervals', 
+                  pad=20, fontsize=20, fontweight='bold')
+    ax1.set_xlabel('Margin (Trump Lead → | ← Harris Lead)', fontsize=16)
     
-    # Bottom plot - EV distribution
+    # Electoral Vote Distribution plot with better distinction
     ax2 = fig.add_subplot(gs[1])
     ev_dist = ev_results['EVDistribution']
     
-    # Create histogram with KDE
-    counts, bins, _ = ax2.hist(ev_dist, bins=50, density=True, alpha=0.3, 
-                              color='purple', label='Electoral Vote Distribution')
+    # Create histogram with colored bars
+    counts, bins, patches = ax2.hist(ev_dist, bins=40, density=True, alpha=0.5,
+                                   color='gray', edgecolor='white',
+                                   linewidth=1)
     
-    # Add KDE line
-    from scipy.stats import gaussian_kde
+    # Color the bars based on 270 threshold
+    for i in range(len(patches)):
+        if bins[i] >= 270:
+            patches[i].set_facecolor(colors['trump'])
+            patches[i].set_alpha(0.6)
+        else:
+            patches[i].set_facecolor(colors['harris'])
+            patches[i].set_alpha(0.6)
+    
+    bin_width = bins[1] - bins[0]
+    percentage_counts = counts * bin_width * 100
+    
+    # Add count labels
+    threshold = max(percentage_counts) * 0.15
+    for i, (count, patch) in enumerate(zip(percentage_counts, patches)):
+        if count > threshold:
+            bin_center = (bins[i] + bins[i+1]) / 2
+            ax2.text(bin_center, -max(percentage_counts) * 0.05,
+                    f"{int(count * len(ev_dist)/100)}",
+                    ha='center', va='top', fontsize=12)
+    
+    # Add KDE overlay
     kde = gaussian_kde(ev_dist)
     x_range = np.linspace(bins[0], bins[-1], 200)
-    ax2.plot(x_range, kde(x_range), color='purple', alpha=0.8)
+    kde_values = kde(x_range) * bin_width * 100
+    ax2.plot(x_range, kde_values, color='black', 
+             linewidth=2, alpha=0.8)
     
-    # Add 270 line and annotation
-    ax2.axvline(x=270, color='black', linestyle='--', alpha=0.7)
-    ax2.text(270, ax2.get_ylim()[1], '270 EV\nNeeded to Win',
-             ha='center', va='bottom', fontsize=14)
+    # Add prominent 270 line
+    ax2.axvline(x=270, color='black', linestyle='--', 
+                linewidth=2, alpha=0.8,
+                label='270 EV Threshold')
     
-    # Customize bottom plot
-    ax2.set_title('Electoral Vote Distribution', pad=40, fontsize=15)
-    ax2.set_xlabel('Trump Electoral Votes', fontsize=14)
-    ax2.set_ylabel('Probability Density', fontsize=14)
-    ax2.tick_params(axis='both', labelsize=12)
+    # Add shaded regions with labels
+    max_percentage = max(kde_values)
     
-    # Add summary text
-    summary_ax = fig.add_subplot(gs[2])
+    # Add region labels with arrows
+    ax2.annotate('Harris Wins\n(<270 EV)', 
+                xy=(250, max_percentage/2),
+                xytext=(220, max_percentage * 0.7),
+                ha='center', color=colors['harris'],
+                fontsize=16, fontweight='bold',
+                arrowprops=dict(arrowstyle='->',
+                              color=colors['harris'],
+                              lw=2))
+    
+    ax2.annotate('Trump Wins\n(≥270 EV)', 
+                xy=(290, max_percentage/2),
+                xytext=(320, max_percentage * 0.7),
+                ha='center', color=colors['trump'],
+                fontsize=16, fontweight='bold',
+                arrowprops=dict(arrowstyle='->',
+                              color=colors['trump'],
+                              lw=2))
+    
+    # Add vertical text for 270 line
+    ax2.text(272, max_percentage * 0.9, '270 EV Threshold',
+             rotation=90, ha='left', va='top',
+             fontsize=14, fontweight='bold')
+    
+    ax2.set_title('Electoral Vote Distribution', pad=20, fontsize=18, fontweight='bold')
+    ax2.set_xlabel('Electoral Votes', fontsize=16, fontweight='bold')
+    ax2.set_ylabel('Percentage of Simulations (%)', fontsize=16, fontweight='bold')
+    ax2.tick_params(axis='both', labelsize=14)
+    ax2.grid(True, alpha=0.3)
+    
+    # Win probability bars
+    ax3 = fig.add_subplot(gs[2])
+    
+    trump_prob = ev_results['TrumpProb']
+    harris_prob = ev_results['HarrisProb']
+    
+    ax3.barh(0, trump_prob * 100, height=0.4, color=colors['trump'], alpha=0.7)
+    ax3.barh(0, harris_prob * 100, height=0.4, color=colors['harris'], 
+             alpha=0.7, left=trump_prob * 100)
+    
+    # Larger probability labels
+    ax3.text(trump_prob * 50, 0, f"TRUMP\n{trump_prob*100:.1f}%", 
+             ha='center', va='center', color='white', 
+             fontsize=18, fontweight='bold')
+    ax3.text(trump_prob * 100 + harris_prob * 50, 0, 
+             f"HARRIS\n{harris_prob*100:.1f}%", 
+             ha='center', va='center', color='white', 
+             fontsize=18, fontweight='bold')
+    
+    ax3.set_title('Win Probability', pad=20, fontsize=18, fontweight='bold')
+    ax3.set_xlim(0, 100)
+    ax3.set_yticks([])
+    ax3.set_xlabel('Probability (%)', fontsize=16, fontweight='bold')
+    
+    # Summary text
+    summary_ax = fig.add_subplot(gs[3])
     summary_text = (
         f"Projection: Trump {ev_results['TrumpEV']:.0f} EV (±{ev_results['TrumpEV_std']:.0f}), "
         f"Harris {ev_results['HarrisEV']:.0f} EV  |  "
-        f"Win Probability: Trump {ev_results['TrumpProb']*100:.0f}%, "
-        f"Harris {ev_results['HarrisProb']*100:.0f}%  |  "
-        f"Recount Scenario: {ev_results['Recount_Probability']*100:.0f}%"
+        f"Recount Scenario Probability: {ev_results['Recount_Probability']*100:.1f}%"
     )
     summary_ax.text(0.5, 0.5, summary_text, ha='center', va='center',
-                   fontsize=14, transform=summary_ax.transAxes)
+                   fontsize=18, fontweight='bold', transform=summary_ax.transAxes)
     summary_ax.axis('off')
     
-    # Add timestamp and credit
+    # Attribution
     plt.figtext(0.02, 0.02, 
-                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by Tatsu Ikeda",
-                fontsize=11, alpha=0.7)
+                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by Tatsu Ikeda, https://github.com/tatsuikeda/rcp_polling_data_processor", 
+                fontsize=14, alpha=0.7)
     plt.figtext(0.98, 0.02,
-                "Based on RCP polling data with historical error adjustment",
-                fontsize=11, alpha=0.7, ha='right')
+                "Source: RealClearPolitics polling data with historical error adjustment",
+                fontsize=14, alpha=0.7, ha='right')
     
     plt.tight_layout()
-    # Adjust layout after tight_layout to maintain left margin
-    plt.subplots_adjust(left=0.25)
     plt.show()
 
 def main():

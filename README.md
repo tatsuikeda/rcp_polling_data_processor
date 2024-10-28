@@ -100,9 +100,10 @@ python rcp_polling_data_processor_for_2024_election.py
 The script will:
 1. Fetch polling data for battleground states
 2. Process and analyze the data
-3. Display a visualization of the battleground states polling analysis
-4. Output a summary of polling results for each state
-5. Provide an Electoral College projection
+3. Output a summary of polling results for each state
+4. Provide an Electoral College projection
+5. Display a visualization of the battleground states polling analysis
+
 
 ## Visualization
 
@@ -114,7 +115,7 @@ The script now includes a visualization of the battleground states polling analy
 - Orders states from largest lead to smallest, regardless of the leading candidate
 - Provides a clear visual representation of the current state of the race in key battleground states
 
-The visualization appears after the data processing and before the final Electoral College projection.
+The visualization appears after the data processing and the final Electoral College projection.
 
 ## Mathematical and Statistical Methods
 
