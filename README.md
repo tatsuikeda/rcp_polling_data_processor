@@ -292,4 +292,4 @@ This script uses Selenium WebDriver to scrape data from RealClearPolitics. Ensur
 
 ## Disclaimer
 
-This tool is for educational and informational purposes only. Poll aggregation and electoral projections are complex topics, and this simple model should not be used for making predictions or decisions related to actual elections.
+This tool is for educational and informational purposes only. Poll aggregation and electoral projections are complex topics, and this simple model should not be used for making predictions or decisions related to actual elections. 
