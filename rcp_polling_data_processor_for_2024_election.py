@@ -172,7 +172,7 @@ def fetch_polling_data(driver: webdriver.Chrome, state: str) -> Optional[pd.Data
                 print(f"No tables found for {state}")
                 return None
                 
-            table = tables[1]
+            table = tables[0]
             headers = [th.text.strip() for th in table.find_elements(By.TAG_NAME, 'th')]
             
             rows = []
