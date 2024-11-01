@@ -1,6 +1,7 @@
 # RCP Polling Data Processor
 
 This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results, calculates probabilities based on confidence intervals, and provides a visual representation of the polling analysis.
+![Figure_1](https://github.com/user-attachments/assets/257a79b8-da9e-4850-b7d2-13af8b2616b0)
 
 ## Author
 
