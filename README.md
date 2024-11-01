@@ -49,7 +49,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
    ### macOS
    
-   Using Homebrew: (See homebrew instructions at the bottom of this README)
+   Using Homebrew:
    ```
    brew install --cask chromedriver
    ```
@@ -105,148 +105,144 @@ The script will:
 4. Provide an Electoral College projection
 5. Display a visualization of the battleground states polling analysis
 
+## Mathematical and Statistical Methods
+
+This script employs sophisticated statistical techniques to process and analyze polling data:
+
+### 1. Pollster Quality Ratings
+
+Pollsters are weighted based on their historical accuracy and methodology:
+
+```python
+POLLSTER_RATINGS = {
+    'A+': 1.0,
+    'A': 0.85,
+    'A-': 0.75,
+    'B+': 0.65,
+    'B': 0.55,
+    'B-': 0.45,
+    'C+': 0.35,
+    'C': 0.25,
+    'C-': 0.15,
+    'D': 0.1
+}
+```
+
+### 2. Time Decay Weighting
+
+Recent polls are given more weight using an exponential decay function:
+
+```python
+POLL_DECAY_RATE = 0.05  # Decay rate parameter
+time_weight = 1 / (1 + POLL_DECAY_RATE * days_old)
+```
+
+### 3. Sample Size and Type Weighting
+
+Polls are weighted based on sample size and likely voter (LV) vs. registered voter (RV) methodology:
+
+```python
+base_weight = 1 / np.sqrt(1/sample_size) if sample_size > 0 else 0
+sample_type_weight = 1.5 if 'LV' in str(row['SAMPLE']) else 1.0
+```
+
+### 4. Historical Error Adjustment
+
+Each state's historical polling errors are weighted to account for systematic bias:
+
+```python
+weighted_error = (
+    0.7 * hist_errors['2020'] +
+    0.2 * hist_errors['2016'] +
+    0.1 * hist_errors['2012']
+)
+```
+
+### 5. Regional Correlations
+
+State outcomes are correlated based on geographic regions:
+
+```python
+REGIONAL_CORRELATIONS = {
+    'Northeast': {'Northeast': 1.0, 'Midwest': 0.8, 'South': 0.7, 'Southwest': 0.6},
+    'Midwest': {'Northeast': 0.8, 'Midwest': 1.0, 'South': 0.75, 'Southwest': 0.7},
+    'South': {'Northeast': 0.7, 'Midwest': 0.75, 'South': 1.0, 'Southwest': 0.65},
+    'Southwest': {'Northeast': 0.6, 'Midwest': 0.7, 'South': 0.65, 'Southwest': 1.0}
+}
+```
+
+### 6. Undecided Voter Allocation
+
+Sophisticated allocation of undecided voters considering:
+- Challenger advantage (reduced in final weeks)
+- Current polling strength
+- Historical polling errors
+- Diminishing returns on strength adjustments
+
+```python
+challenger_base = 0.52
+strength_adjustment = np.tanh(relative_strength) * 0.08
+error_adjustment = np.tanh(historical_error / 10) * 0.04
+challenger_share = min(max(challenger_share - error_adjustment, 0.48), 0.56)
+```
+
+### 7. Monte Carlo Simulation
+
+Comprehensive simulation incorporating:
+- T-distribution with fat tails (df=20)
+- Correlated state outcomes
+- Systematic bias term
+- Multiple sources of uncertainty:
+  - Base polling error
+  - Historical error
+  - Sample size effects
+
+### 8. Confidence Interval Calculation
+
+90% confidence intervals are used for:
+- State margins
+- Electoral vote projections
+- Win probabilities
+
+This provides a balance between capturing uncertainty and maintaining practical interpretability.
+
+### 9. Poll Aggregation Weight Formula
+
+The final weight for each poll combines multiple factors:
+
+```python
+total_weight = (base_weight * 
+               time_weight * 
+               sample_type_weight * 
+               pollster_rating * 
+               historical_error_adjustment)
+```
+
+### 10. Recount Probability
+
+Calculates the probability of extremely close electoral college outcomes:
+
+```python
+recount_zone = np.sum(np.abs(trump_ev - 269.5) <= 5) / n_sims
+```
 
 ## Visualization
 
-The script now includes a visualization of the battleground states polling analysis. This feature:
+The script now includes a comprehensive visualization of the battleground states polling analysis. This feature:
 
 - Displays a horizontal bar chart showing the mean difference in polling between candidates for each battleground state
 - Uses color coding (red for Trump lead, blue for Harris lead) to easily distinguish which candidate is leading in each state
-- Includes error bars to represent the confidence intervals of the polling data
+- Includes error bars to represent the 90% confidence intervals of the polling data
 - Orders states from largest lead to smallest, regardless of the leading candidate
-- Provides a clear visual representation of the current state of the race in key battleground states
+- Shows electoral vote distribution with probability density
+- Displays win probabilities and recount scenarios
+- Provides clear regional and temporal correlations visualization
 
 The visualization appears after the data processing and the final Electoral College projection.
 
-## Mathematical and Statistical Methods
+## Note
 
-This script employs several mathematical and statistical techniques to process and analyze polling data:
-
-### 1. Time Decay Weighting
-
-We use a time decay function to give more weight to recent polls:
-
-```python
-def time_decay_weight(days, lambda_param=0.001):
-    return 1 / (1 + lambda_param * days**2)
-```
-
-This quadratic decay function ensures that older polls have less influence on the final estimate. The `lambda_param` controls the rate of decay.
-
-### 2. Sample Size Weighting
-
-Polls with larger sample sizes are given more weight:
-
-```python
-def sample_size_weight(sample_size, moe):
-    return 1 / (moe**2 * sample_size)
-```
-
-This formula is derived from the fact that the variance of a poll is proportional to 1 / (sample size).
-
-### 3. Undecided Voter Allocation
-
-Undecided voters are allocated using a simple model that slightly favors the challenger:
-
-```python
-def allocate_undecided(trump, harris, undecided, admin_approval=0.5):
-    trump_share = 0.55 - 0.1 * admin_approval
-    harris_share = 1 - trump_share
-    return trump + undecided * trump_share, harris + undecided * harris_share
-```
-
-This model assumes that undecided voters are more likely to break for the challenger (Trump), but it's moderated by the administration's approval rating.
-
-### 4. Weighted Averaging
-
-The final estimate for each candidate is a weighted average of all polls:
-
-```python
-trump_avg = (df['TRUMP_ADJ'] * df['CombinedWeight']).sum() / total_weight
-harris_avg = (df['HARRIS_ADJ'] * df['CombinedWeight']).sum() / total_weight
-```
-
-Where `CombinedWeight` is the product of time and sample size weights.
-
-### 5. Confidence Interval-based Probability Calculation
-
-We use the confidence intervals from aggregated polling data to calculate the probability of each candidate winning a state:
-
-```python
-mean_diff = battleground_results[state]['MeanDiff']
-ci = battleground_results[state]['CI']
-std_dev = (ci[1] - ci[0]) / (2 * 1.96)  # Assuming 95% CI
-z_score = mean_diff / std_dev
-trump_prob = 1 - stats.norm.cdf(z_score)
-```
-
-This method:
-- Calculates the standard deviation based on the confidence interval
-- Computes a z-score for the mean difference
-- Uses the cumulative distribution function of the normal distribution to determine the probability
-
-### 6. Overall Victory Probability Calculation
-
-We calculate the overall probability of victory by considering all possible combinations of state outcomes:
-
-```python
-scenarios = [[0, 1]] * len(battleground_ec)
-total_probability = 0
-for scenario in itertools.product(*scenarios):
-    scenario_ec = safe_ec.copy()
-    scenario_prob = 1
-    for i, (state, votes) in enumerate(battleground_ec.items()):
-        if scenario[i] == 0:  # Trump wins
-            scenario_ec['Trump'] += votes
-            scenario_prob *= state_probabilities[state]
-        else:  # Harris wins
-            scenario_ec['Harris'] += votes
-            scenario_prob *= (1 - state_probabilities[state])
-    
-    if scenario_ec['Trump'] > 269:
-        total_probability += scenario_prob
-```
-
-This approach:
-- Generates all possible combinations of state outcomes
-- Calculates the probability of each scenario
-- Sums the probabilities of all scenarios where a candidate wins
-
-### 7. Margin of Error Estimation
-
-For polls missing MOE data, we estimate it based on the sample size:
-
-```python
-def estimate_moe(row, df):
-    if pd.notna(row['SAMPLE']) and row['SAMPLE'].replace('LV', '').replace('RV', '').strip().isdigit():
-        sample_size = int(row['SAMPLE'].replace('LV', '').replace('RV', '').strip())
-        return 1 / np.sqrt(sample_size)
-    else:
-        valid_moes = df['MOE'].dropna().astype(float)
-        return valid_moes.median() if not valid_moes.empty else 3.0
-```
-
-This uses the standard error formula for a proportion (1 / sqrt(n)) when sample size is available, or falls back to the median MOE or a default value.
-
-### Limitations and Assumptions
-
-- The confidence interval-based probability calculation assumes normally distributed polling errors.
-- This model treats state outcomes as independent, which may not reflect real-world correlations between states.
-- The method doesn't account for systematic polling errors or "unknown unknowns" that could affect all polls similarly.
-- This approach is sensitive to the accuracy of the reported confidence intervals and may not capture all sources of uncertainty in polling.
-- The time decay and sample size weighting methods are simplifications and may not capture all factors affecting poll reliability.
-- The undecided voter allocation model is a simple heuristic and may not accurately reflect real voting behavior.
-
-While this method provides a mathematically sound way to calculate probabilities based on polling data, it should be considered as one of many possible approaches to election forecasting. More sophisticated models might incorporate additional factors such as economic indicators, historical voting patterns, and demographic trends.
-
-## Troubleshooting
-
-If you encounter issues with ChromeDriver:
-
-1. Ensure your Chrome browser is up to date
-2. Verify that the ChromeDriver version matches your Chrome version
-3. Check that ChromeDriver is correctly added to your system PATH
-4. On macOS, you may need to run `xattr -d com.apple.quarantine /usr/local/bin/chromedriver` if you encounter security issues
+This script uses Selenium WebDriver to scrape data from RealClearPolitics. Ensure you have the Chrome browser installed and the appropriate ChromeDriver for your Chrome version.
 
 ## Installing Homebrew
 
@@ -288,10 +284,6 @@ To install Homebrew on your Mac, follow these steps:
 
 You should now have Homebrew installed and ready to use on your Mac.
 
-## Note
-
-This script uses Selenium WebDriver to scrape data from RealClearPolitics. Ensure you have the Chrome browser installed and the appropriate ChromeDriver for your Chrome version.
-
 ## Disclaimer
 
-This tool is for educational and informational purposes only. Poll aggregation and electoral projections are complex topics, and this simple model should not be used for making predictions or decisions related to actual elections. 
+This tool is for educational and informational purposes only. Poll aggregation and electoral projections are complex topics, and this model should be used as one of many inputs for understanding election dynamics. The projections should not be used as the sole basis for decision-making related to actual elections.

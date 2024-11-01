@@ -363,7 +363,7 @@ def monte_carlo_simulation(
     state_data: Dict[str, pd.DataFrame], 
     n_sims: int = 250000
 ) -> Dict[str, Dict[str, float]]:
-    """Run Monte Carlo simulation with improved methodology for realistic CIs."""
+    """Run Monte Carlo simulation with 90% confidence intervals for tighter bounds."""
     results = {}
     
     # Create correlation matrix for states
@@ -379,8 +379,8 @@ def monte_carlo_simulation(
     
     correlation_matrix += np.eye(n_states) * 1e-6
     
-    # Generate correlated random effects using t-distribution with increased df
-    df = 20  # Increased from 15 for even thinner tails
+    # Generate correlated random effects using t-distribution
+    df = 20  # Increased from 15 for slightly thinner tails
     random_effects = np.random.multivariate_normal(
         mean=np.zeros(n_states),
         cov=correlation_matrix,
@@ -389,7 +389,7 @@ def monte_carlo_simulation(
     random_effects = random_effects * np.sqrt((df-2)/df)
     
     # Add reduced systematic bias term
-    systematic_bias = np.random.normal(0, 0.15, n_sims)  # Reduced from 0.2
+    systematic_bias = np.random.normal(0, 0.15, n_sims)
     
     # Run simulations
     state_results = np.zeros((n_sims, n_states))
@@ -416,10 +416,10 @@ def monte_carlo_simulation(
         )
         
         # Combine multiple sources of uncertainty with reduced base error
-        polling_error = 0.5  # Reduced from 0.6
+        polling_error = 0.5  # Base polling error
         total_error = np.sqrt(
             polling_error**2 + 
-            (historical_error * 0.3)**2 +  # Reduced from 0.4
+            (historical_error * 0.3)**2 +
             (100/n_eff)
         )
         
@@ -427,16 +427,16 @@ def monte_carlo_simulation(
         state_results[:,i] = (
             trump_mean - harris_mean +
             random_effects[:,i] * total_error +
-            systematic_bias * historical_error * 0.1  # Reduced from 0.15
+            systematic_bias * historical_error * 0.1
         )
     
     # Calculate electoral votes and probabilities
     ev_results = calculate_electoral_votes(state_results, states)
     
-    # Process state-level results
+    # Process state-level results with 90% CI instead of 95%
     for i, state in enumerate(states):
         mean_margin = np.mean(state_results[:,i])
-        ci = np.percentile(state_results[:,i], [2.5, 97.5])
+        ci = np.percentile(state_results[:,i], [5, 95])  # Changed from [2.5, 97.5]
         trump_win_prob = np.mean(state_results[:,i] > 0)
         
         results[state] = {
@@ -452,7 +452,7 @@ def calculate_electoral_votes(
     state_results: np.ndarray, 
     states: List[str]
 ) -> Dict[str, float]:
-    """Calculate electoral vote outcomes."""
+    """Calculate electoral vote outcomes using 90% confidence intervals."""
     n_sims = len(state_results)
     
     # Base electoral votes (excluding battleground states)
@@ -473,7 +473,7 @@ def calculate_electoral_votes(
     
     ev_mean = np.mean(trump_ev)
     ev_std = np.std(trump_ev)
-    ev_ci = np.percentile(trump_ev, [2.5, 97.5])
+    ev_ci = np.percentile(trump_ev, [5, 95])  # Changed from [2.5, 97.5] to [5, 95]
     recount_zone = np.sum(np.abs(trump_ev - 269.5) <= 5) / n_sims
     
     return {
@@ -491,7 +491,7 @@ def visualize_results(
     state_results: Dict[str, Dict[str, float]], 
     ev_results: Dict[str, float]
 ):
-    """Create mobile-friendly visualization of election results."""
+    """Create mobile-friendly visualization of election results with 90% confidence intervals."""
     # Import needed for KDE
     from scipy.stats import gaussian_kde
     
@@ -548,10 +548,10 @@ def visualize_results(
                     color=light_color, alpha=0.3, height=0.8,
                     edgecolor='none')
     
-    # Add sophisticated error bars
+    # Add sophisticated error bars with reduced cap size for 90% CI
     error_bars = ax1.errorbar(margins, y_pos, xerr=errors, fmt='none',
-                             color=colors['neutral'], capsize=7, capthick=2,
-                             elinewidth=2, alpha=0.6)
+                             color=colors['neutral'], capsize=5, capthick=1.5,
+                             elinewidth=1.5, alpha=0.7)
     
     # Create state labels with abbreviations
     labels = []
@@ -565,20 +565,20 @@ def visualize_results(
         label = f"{state} ({STATE_ABBREV[state]})\n{ev} EV\n{prob_pct*100:.0f}% {candidate}"
         labels.append(label)
         
-        # Add margin values and CI numbers
+        # Add margin values and CI numbers with adjusted positioning
         margin = margins[i]
         text_color = 'black'
         
-        # Add CI numbers
-        ax1.text(state_results[state]['CI'][0] - 0.2, y_pos[i] + 0.3,
+        # Add CI numbers with more compact formatting
+        ax1.text(state_results[state]['CI'][0] - 0.1, y_pos[i] + 0.3,
                 f"{state_results[state]['CI'][0]:+.1f}", 
                 ha='right', va='bottom',
-                color=text_color, fontsize=14)
+                color=text_color, fontsize=12)
         
-        ax1.text(state_results[state]['CI'][1] + 0.2, y_pos[i] + 0.3,
+        ax1.text(state_results[state]['CI'][1] + 0.1, y_pos[i] + 0.3,
                 f"{state_results[state]['CI'][1]:+.1f}", 
                 ha='left', va='bottom',
-                color=text_color, fontsize=14)
+                color=text_color, fontsize=12)
         
         # Add mean margin
         ax1.text(margin + (0.2 if margin > 0 else -0.2), y_pos[i] + 0.3,
@@ -595,16 +595,17 @@ def visualize_results(
     ax1.axvline(x=0, color=colors['neutral'], linestyle='-', 
                 linewidth=1.5, alpha=0.3, zorder=1)
     
-    ax1.set_title('2024 Battleground State Polling Margins\nwith 95% Confidence Intervals', 
+    ax1.set_title('2024 Battleground State Polling Margins\nwith 90% Confidence Intervals', 
                   pad=20, fontsize=20, fontweight='bold')
     ax1.set_xlabel('Margin (Trump Lead → | ← Harris Lead)', fontsize=16)
     
-    # Electoral Vote Distribution plot with better distinction
+    # Electoral Vote Distribution plot with adjusted bin width
     ax2 = fig.add_subplot(gs[1])
     ev_dist = ev_results['EVDistribution']
     
-    # Create histogram with colored bars
-    counts, bins, patches = ax2.hist(ev_dist, bins=40, density=True, alpha=0.5,
+    # Adjust number of bins for smoother distribution with 90% CI
+    n_bins = 35  # Reduced from 40 for smoother appearance
+    counts, bins, patches = ax2.hist(ev_dist, bins=n_bins, density=True, alpha=0.5,
                                    color='gray', edgecolor='white',
                                    linewidth=1)
     
@@ -617,31 +618,37 @@ def visualize_results(
             patches[i].set_facecolor(colors['harris'])
             patches[i].set_alpha(0.6)
     
+    # Calculate and display 90% CI for electoral votes
+    ev_ci = np.percentile(ev_dist, [5, 95])
+    ax2.axvline(x=ev_ci[0], color='black', linestyle=':', linewidth=1.5,
+                alpha=0.5, label='90% CI')
+    ax2.axvline(x=ev_ci[1], color='black', linestyle=':', linewidth=1.5,
+                alpha=0.5)
+    
     bin_width = bins[1] - bins[0]
     percentage_counts = counts * bin_width * 100
     
-    # Add count labels
-    threshold = max(percentage_counts) * 0.15
+    # Add count labels with adjusted threshold
+    threshold = max(percentage_counts) * 0.12  # Reduced threshold for more labels
     for i, (count, patch) in enumerate(zip(percentage_counts, patches)):
         if count > threshold:
             bin_center = (bins[i] + bins[i+1]) / 2
-            ax2.text(bin_center, -max(percentage_counts) * 0.05,
+            ax2.text(bin_center, count + max(percentage_counts) * 0.02,
                     f"{int(count * len(ev_dist)/100)}",
-                    ha='center', va='top', fontsize=12)
+                    ha='center', va='bottom', fontsize=10)
     
-    # Add KDE overlay
-    kde = gaussian_kde(ev_dist)
+    # Add KDE overlay with adjusted bandwidth
+    kde = gaussian_kde(ev_dist, bw_method='silverman')
     x_range = np.linspace(bins[0], bins[-1], 200)
     kde_values = kde(x_range) * bin_width * 100
     ax2.plot(x_range, kde_values, color='black', 
              linewidth=2, alpha=0.8)
     
-    # Add prominent 270 line
+    # Add 270 line
     ax2.axvline(x=270, color='black', linestyle='--', 
                 linewidth=2, alpha=0.8,
                 label='270 EV Threshold')
     
-    # Add shaded regions with labels
     max_percentage = max(kde_values)
     
     # Add region labels with arrows
@@ -663,14 +670,17 @@ def visualize_results(
                               color=colors['trump'],
                               lw=2))
     
-    # Add vertical text for 270 line
-    ax2.text(272, max_percentage * 0.9, '270 EV Threshold',
-             rotation=90, ha='left', va='top',
-             fontsize=14, fontweight='bold')
+    # Add CI range annotation
+    ax2.annotate(f'90% CI: {ev_ci[0]:.0f}-{ev_ci[1]:.0f} EV',
+                xy=(270, max_percentage * 0.95),
+                xytext=(270, max_percentage * 1.05),
+                ha='center', va='bottom',
+                fontsize=14, fontweight='bold')
     
-    ax2.set_title('Electoral Vote Distribution', pad=20, fontsize=18, fontweight='bold')
-    ax2.set_xlabel('Electoral Votes', fontsize=16, fontweight='bold')
-    ax2.set_ylabel('Percentage of Simulations (%)', fontsize=16, fontweight='bold')
+    ax2.set_title('Electoral Vote Distribution', 
+                  pad=20, fontsize=18, fontweight='bold')
+    ax2.set_xlabel('Electoral Votes', fontsize=16)
+    ax2.set_ylabel('Percentage of Simulations (%)', fontsize=16)
     ax2.tick_params(axis='both', labelsize=14)
     ax2.grid(True, alpha=0.3)
     
@@ -696,14 +706,15 @@ def visualize_results(
     ax3.set_title('Win Probability', pad=20, fontsize=18, fontweight='bold')
     ax3.set_xlim(0, 100)
     ax3.set_yticks([])
-    ax3.set_xlabel('Probability (%)', fontsize=16, fontweight='bold')
+    ax3.set_xlabel('Probability (%)', fontsize=16)
     
     # Summary text
     summary_ax = fig.add_subplot(gs[3])
     summary_text = (
         f"Projection: Trump {ev_results['TrumpEV']:.0f} EV (±{ev_results['TrumpEV_std']:.0f}), "
         f"Harris {ev_results['HarrisEV']:.0f} EV  |  "
-        f"Recount Scenario Probability: {ev_results['Recount_Probability']*100:.1f}%"
+        f"90% CI: {ev_results['TrumpEV_CI'][0]:.0f}-{ev_results['TrumpEV_CI'][1]:.0f} EV  |  "
+        f"Recount Scenario: {ev_results['Recount_Probability']*100:.1f}%"
     )
     summary_ax.text(0.5, 0.5, summary_text, ha='center', va='center',
                    fontsize=18, fontweight='bold', transform=summary_ax.transAxes)
