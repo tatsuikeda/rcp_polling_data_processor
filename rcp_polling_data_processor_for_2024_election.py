@@ -3,7 +3,7 @@ import sys
 import time
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any  # Added Any here
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -11,9 +11,15 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.stats import t  # Using t-distribution for fat tails
+from scipy.stats import t, norm
 import itertools
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LassoCV, RidgeCV, ElasticNetCV
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.preprocessing import StandardScaler
+import statsmodels.api as sm
 
 # Selenium imports
 from selenium import webdriver
@@ -38,7 +44,7 @@ PLOT_COLORS = {
 
 # Plot Style Configuration
 PLOT_STYLE = {
-    'figure.figsize': (12, 15),  # Increased height
+    'figure.figsize': (12, 15),
     'figure.dpi': 100,
     'axes.labelsize': 11,
     'axes.titlesize': 12,
@@ -54,7 +60,6 @@ PLOT_STYLE = {
 }
 
 # Constants and Configuration
-
 MAX_POLL_AGE_DAYS = 90  # 3 month maximum age for polls
 POLL_DECAY_RATE = 0.05  # Aggressive decay rate for weighting recent polls
 
@@ -106,7 +111,7 @@ BATTLEGROUND_STATES = {
 BASE_URL = 'https://www.realclearpolling.com/polls/president/general/2024/'
 HARRIS_ENTRY_DATE = datetime(2024, 8, 1)
 
-# Updated regional correlations for final week
+# Regional correlations for final week
 REGIONAL_CORRELATIONS = {
     'Northeast': {'Northeast': 1.0, 'Midwest': 0.8, 'South': 0.7, 'Southwest': 0.6},
     'Midwest': {'Northeast': 0.8, 'Midwest': 1.0, 'South': 0.75, 'Southwest': 0.7},
@@ -114,18 +119,10 @@ REGIONAL_CORRELATIONS = {
     'Southwest': {'Northeast': 0.6, 'Midwest': 0.7, 'South': 0.65, 'Southwest': 1.0}
 }
 
-# Updated pollster ratings with more aggressive weighting
+# Pollster ratings with aggressive weighting
 POLLSTER_RATINGS = {
-    'A+': 1.0,
-    'A': 0.85,
-    'A-': 0.75,
-    'B+': 0.65,
-    'B': 0.55,
-    'B-': 0.45,
-    'C+': 0.35,
-    'C': 0.25,
-    'C-': 0.15,
-    'D': 0.1
+    'A+': 1.0, 'A': 0.85, 'A-': 0.75, 'B+': 0.65, 'B': 0.55,
+    'B-': 0.45, 'C+': 0.35, 'C': 0.25, 'C-': 0.15, 'D': 0.1
 }
 
 # Maximum retries for web scraping
@@ -155,7 +152,7 @@ def setup_driver() -> webdriver.Chrome:
                 raise
             print(f"ChromeDriver setup attempt {retry_count} failed, retrying...")
             time.sleep(RETRY_DELAY)
-            
+
 def fetch_polling_data(driver: webdriver.Chrome, state: str) -> Optional[pd.DataFrame]:
     """Fetch polling data with improved error handling and retry logic."""
     url = f"{BASE_URL}{BATTLEGROUND_STATES[state]['url']}/trump-vs-harris"
@@ -208,6 +205,63 @@ def fetch_polling_data(driver: webdriver.Chrome, state: str) -> Optional[pd.Data
             print(f"Attempt {retry_count} failed, retrying in {RETRY_DELAY} seconds...")
             time.sleep(RETRY_DELAY)
 
+def process_state_data(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Process and clean polling data for final week analysis."""
+    if df is None or df.empty:
+        return None
+        
+    def parse_date(date_str):
+        try:
+            if '-' in date_str:
+                end_date = date_str.split('-')[1].strip()
+            else:
+                end_date = date_str.strip()
+            return pd.to_datetime(end_date, format='%m/%d')
+        except Exception as e:
+            print(f"Error parsing date: {date_str}, Error: {e}")
+            return None
+
+    # Convert dates
+    df['DATE'] = df['DATE'].apply(parse_date)
+    df['DATE'] = df['DATE'].apply(lambda x: x.replace(year=2024) if x is not None else None)
+    
+    # Apply time-based filters
+    current_date = datetime.now().date()
+    cutoff_date = current_date - timedelta(days=MAX_POLL_AGE_DAYS)
+    harris_entry = HARRIS_ENTRY_DATE.date()
+    
+    # Use the later of Harris entry or MAX_POLL_AGE_DAYS cutoff
+    effective_cutoff = max(cutoff_date, harris_entry)
+    
+    # Filter out older polls
+    df = df[df['DATE'].dt.date >= effective_cutoff]
+    
+    print(f"Filtered polls to date range: {effective_cutoff} to {current_date}")
+    print(f"Number of polls in range: {len(df)}")
+    
+    # Convert polling numbers to float with validation
+    for col in ['TRUMP (R)', 'HARRIS (D)', 'MOE']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Basic data validation
+    df = df[
+        (df['TRUMP (R)'] >= 0) & 
+        (df['HARRIS (D)'] >= 0) & 
+        ((df['TRUMP (R)'] + df['HARRIS (D)']) <= 100)
+    ]
+    
+    # Calculate undecided/other voters
+    df['Undecided'] = 100 - df['TRUMP (R)'] - df['HARRIS (D)']
+    
+    # Calculate weights
+    df['Weight'] = df.apply(calculate_poll_weight, axis=1)
+    
+    # Remove invalid entries
+    df = df.dropna(subset=['TRUMP (R)', 'HARRIS (D)', 'Weight', 'DATE'])
+    df = df[df['Weight'] > 0]
+    
+    return df
+
 def calculate_poll_weight(row: pd.Series) -> float:
     """Calculate comprehensive poll weight with improved methodology for final week."""
     try:
@@ -219,7 +273,7 @@ def calculate_poll_weight(row: pd.Series) -> float:
         # Calculate age and apply decay
         days_old = (datetime.now().date() - row['DATE'].date()).days
         
-        # Double-check we're within MAX_POLL_AGE_DAYS (defensive programming)
+        # Double-check we're within MAX_POLL_AGE_DAYS
         if days_old > MAX_POLL_AGE_DAYS:
             return 0
             
@@ -247,6 +301,205 @@ def calculate_poll_weight(row: pd.Series) -> float:
     except Exception as e:
         print(f"Error calculating weight: {e}")
         return 0
+    
+def bootstrap_confidence_intervals(data: pd.DataFrame, n_bootstrap: int = 1000) -> dict:
+    """Calculate bootstrap confidence intervals for polling estimates."""
+    results = []
+    for _ in range(n_bootstrap):
+        # Resample with replacement
+        bootstrap_sample = data.sample(n=len(data), replace=True)
+        weighted_mean = np.average(
+            bootstrap_sample['margin'], 
+            weights=bootstrap_sample['Weight']
+        )
+        results.append(weighted_mean)
+    
+    return {
+        'mean': np.mean(results),
+        'ci_lower': np.percentile(results, 5),
+        'ci_upper': np.percentile(results, 95),
+        'std': np.std(results)
+    }
+
+def impute_missing_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Impute missing polling data using modern techniques."""
+    # Create imputer with multiple regression iterations
+    imputer = IterativeImputer(
+        max_iter=10,
+        random_state=42,
+        min_value=0,
+        max_value=100
+    )
+    
+    # Columns to use for imputation
+    cols_for_imputation = ['TRUMP (R)', 'HARRIS (D)', 'Weight', 'Historical_Error']
+    
+    # Create copy of data
+    df_imputed = df.copy()
+    
+    # Perform imputation
+    imputed_values = imputer.fit_transform(df_imputed[cols_for_imputation])
+    
+    # Replace missing values in original dataframe
+    for i, col in enumerate(cols_for_imputation):
+        df_imputed[col] = imputed_values[:, i]
+    
+    return df_imputed
+
+def create_ensemble_model(state_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """Create ensemble of models for polling prediction with proper NaN handling."""
+    models = {
+        'lasso': LassoCV(cv=5, random_state=42),
+        'ridge': RidgeCV(cv=5),
+        'elastic_net': ElasticNetCV(cv=5, random_state=42),
+        'rf': RandomForestRegressor(n_estimators=100, random_state=42),
+        'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
+    }
+    
+    ensemble_results = {}
+    
+    for state, df in state_data.items():
+        if df is None or df.empty:
+            continue
+            
+        # Create features and handle missing values
+        features = ['Weight', 'Historical_Error', 'MOE']
+        
+        # Handle missing values in features
+        X = df[features].copy()
+        y = df['TRUMP (R)'].fillna(0) - df['HARRIS (D)'].fillna(0)  # Margin
+        
+        # Fill NaN values with mean for each column
+        for col in X.columns:
+            X[col] = X[col].fillna(X[col].mean())
+            
+        # Convert to numpy arrays
+        X = X.values
+        y = y.values
+        
+        # Standardize features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Train models
+        state_predictions = {}
+        for name, model in models.items():
+            try:
+                model.fit(X_scaled, y)
+                pred = model.predict(np.array([[1, 0, 0]]))  # Predict for standard case
+                state_predictions[name] = pred[0]
+            except Exception as e:
+                print(f"Error fitting {name} for {state}: {e}")
+                state_predictions[name] = None
+        
+        # Combine predictions with weights based on cross-validation performance
+        valid_predictions = [p for p in state_predictions.values() if p is not None]
+        if valid_predictions:
+            ensemble_results[state] = np.mean(valid_predictions)
+        else:
+            ensemble_results[state] = 0
+            
+    return ensemble_results
+
+def hierarchical_state_model(state_data: Dict[str, pd.DataFrame]) -> Dict[str, float]:
+    """Create hierarchical model for state-level estimates."""
+    # Prepare data for hierarchical modeling
+    states = []
+    margins = []
+    weights = []
+    regions = []
+    
+    for state, df in state_data.items():
+        if df is None or df.empty:
+            continue
+            
+        states.append(state)
+        margin = np.average(df['TRUMP (R)'] - df['HARRIS (D)'], weights=df['Weight'])
+        margins.append(margin)
+        weights.append(np.sum(df['Weight']))
+        regions.append(BATTLEGROUND_STATES[state]['region'])
+    
+    # Convert to arrays
+    margins = np.array(margins)
+    weights = np.array(weights)
+    
+    # Create region indicators
+    unique_regions = list(set(regions))
+    region_indicators = pd.get_dummies(regions).values
+    
+    # Fit hierarchical model
+    X = np.column_stack([np.ones_like(margins), region_indicators])
+    model = sm.WLS(margins, X, weights=weights)
+    results = model.fit()
+    
+    # Extract region effects
+    region_effects = dict(zip(unique_regions, results.params[1:]))
+    
+    # Calculate state-level estimates with shrinkage
+    hierarchical_estimates = {}
+    for i, state in enumerate(states):
+        raw_estimate = margins[i]
+        region = regions[i]
+        region_effect = region_effects[region]
+        
+        # Shrinkage factor based on sample size (weight)
+        shrinkage = weights[i] / (weights[i] + 100)  # 100 is prior strength
+        
+        # Combine raw estimate with region effect
+        shrunk_estimate = (
+            shrinkage * raw_estimate + 
+            (1 - shrinkage) * (results.params[0] + region_effect)
+        )
+        
+        hierarchical_estimates[state] = shrunk_estimate
+    
+    return hierarchical_estimates
+
+def regularized_state_correlation(state_data: Dict[str, pd.DataFrame], alpha: float = 0.1) -> np.ndarray:
+    """Apply ridge regularization to state correlation matrix with proper NaN handling."""
+    states = list(state_data.keys())
+    n_states = len(states)
+    
+    # Create margin time series for each state
+    margins = []
+    for state in states:
+        df = state_data[state]
+        if df is None or df.empty:
+            margins.append(np.zeros(1))  # Add dummy data for empty states
+            continue
+            
+        # Calculate margin and handle NaN values
+        margin = df['TRUMP (R)'].fillna(0) - df['HARRIS (D)'].fillna(0)
+        margins.append(margin.values)
+    
+    # Pad sequences to same length
+    max_len = max(len(m) for m in margins)
+    padded_margins = []
+    for m in margins:
+        if len(m) < max_len:
+            # Pad with the mean of existing values
+            pad_value = np.mean(m) if len(m) > 0 else 0
+            padded = np.pad(m, (0, max_len - len(m)), 'constant', constant_values=pad_value)
+            padded_margins.append(padded)
+        else:
+            padded_margins.append(m)
+    
+    # Calculate correlation matrix
+    margins_array = np.array(padded_margins)
+    corr_matrix = np.corrcoef(margins_array)
+    
+    # Handle NaN values in correlation matrix
+    corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+    
+    # Add ridge penalty to diagonal
+    regularized_matrix = corr_matrix + alpha * np.eye(n_states)
+    
+    # Ensure matrix is positive definite
+    eigenvals = np.linalg.eigvals(regularized_matrix)
+    if np.min(eigenvals) < 0:
+        regularized_matrix += (-np.min(eigenvals) + 1e-6) * np.eye(n_states)
+    
+    return regularized_matrix
 
 def allocate_undecided_sophisticated(
     trump: float, 
@@ -279,7 +532,7 @@ def allocate_undecided_sophisticated(
     else:
         challenger_share = challenger_base
     
-    # Add uncertainty based on historical polling errors (reduced range)
+    # Add uncertainty based on historical polling errors
     error_adjustment = np.tanh(historical_error / 10) * 0.04
     challenger_share = min(max(challenger_share - error_adjustment, 0.48), 0.56)
     
@@ -289,242 +542,196 @@ def allocate_undecided_sophisticated(
     
     return trump + trump_allocation, harris + harris_allocation
 
-def process_state_data(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Process and clean polling data for final week analysis."""
-    if df is None or df.empty:
-        return None
-        
-    def parse_date(date_str):
-        try:
-            if '-' in date_str:
-                end_date = date_str.split('-')[1].strip()
-            else:
-                end_date = date_str.strip()
-            return pd.to_datetime(end_date, format='%m/%d')
-        except Exception as e:
-            print(f"Error parsing date: {date_str}, Error: {e}")
-            return None
+# First, let's define all the helper functions needed
 
-    # Convert dates
-    df['DATE'] = df['DATE'].apply(parse_date)
-    df['DATE'] = df['DATE'].apply(lambda x: x.replace(year=2024) if x is not None else None)
+def bootstrap_confidence_intervals(data: pd.DataFrame, n_bootstrap: int = 2000) -> dict:
+    """Calculate bootstrap confidence intervals with increased resampling."""
+    results = []
+    weights = data['Weight'].values / data['Weight'].sum()  # Normalize weights
     
-    # Apply both time-based filters:
-    # 1. Nothing before Harris entered race
-    # 2. Nothing older than MAX_POLL_AGE_DAYS
-    current_date = datetime.now().date()
-    cutoff_date = current_date - timedelta(days=MAX_POLL_AGE_DAYS)
-    harris_entry = HARRIS_ENTRY_DATE.date()
+    for _ in range(n_bootstrap):
+        # Weighted resampling
+        indices = np.random.choice(
+            len(data), 
+            size=len(data), 
+            replace=True, 
+            p=weights
+        )
+        bootstrap_sample = data.iloc[indices]
+        weighted_mean = np.average(
+            bootstrap_sample['margin'],
+            weights=bootstrap_sample['Weight']
+        )
+        results.append(weighted_mean)
     
-    # Use the later of Harris entry or MAX_POLL_AGE_DAYS cutoff
-    effective_cutoff = max(cutoff_date, harris_entry)
+    return {
+        'mean': np.mean(results),
+        'ci_lower': np.percentile(results, 5),
+        'ci_upper': np.percentile(results, 95),
+        'std': np.std(results)
+    }
+
+def calculate_state_correlation_matrix(
+    states: List[str],
+    battleground_data: Dict[str, Dict]
+) -> np.ndarray:
+    """Calculate enhanced correlation matrix incorporating multiple factors."""
+    n_states = len(states)
+    correlation_matrix = np.zeros((n_states, n_states))
     
-    # Filter out older polls
-    df = df[df['DATE'].dt.date >= effective_cutoff]
+    for i in range(n_states):
+        for j in range(n_states):
+            state1 = states[i]
+            state2 = states[j]
+            
+            # Get regional correlation
+            region1 = battleground_data[state1]['region']
+            region2 = battleground_data[state2]['region']
+            regional_corr = REGIONAL_CORRELATIONS[region1][region2]
+            
+            # Calculate demographic similarity (if available)
+            # This could be enhanced with actual demographic data
+            demographic_corr = 0.5  # Default similarity
+            
+            # Calculate historical error correlation
+            hist_errors1 = battleground_data[state1]['poll_errors']
+            hist_errors2 = battleground_data[state2]['poll_errors']
+            error_correlation = 1 - abs(
+                hist_errors1['2020'] - hist_errors2['2020']
+            ) / max(hist_errors1['2020'], hist_errors2['2020'])
+            
+            # Combine correlations with weights
+            correlation_matrix[i,j] = (
+                0.5 * regional_corr +
+                0.3 * error_correlation +
+                0.2 * demographic_corr
+            )
     
-    print(f"Filtered polls to date range: {effective_cutoff} to {current_date}")
-    print(f"Number of polls in range: {len(df)}")
+    # Ensure matrix is positive definite
+    min_eigenval = np.linalg.eigvals(correlation_matrix).min()
+    if min_eigenval < 0:
+        correlation_matrix += np.eye(n_states) * (abs(min_eigenval) + 1e-6)
     
-    # Convert polling numbers to float with validation
-    for col in ['TRUMP (R)', 'HARRIS (D)', 'MOE']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    return correlation_matrix
+
+def calculate_total_uncertainty(
+    state: str,
+    uncertainty: float,
+    hist_error: float,
+    sample_size: int,
+    days_to_election: int
+) -> float:
+    """Calculate comprehensive uncertainty with more constrained bounds."""
+    # Base uncertainty from polling (reduced multiplier)
+    base_uncertainty = uncertainty * 0.7  # Reduced from 1.0
     
-    # Basic data validation
-    df = df[
-        (df['TRUMP (R)'] >= 0) & 
-        (df['HARRIS (D)'] >= 0) & 
-        ((df['TRUMP (R)'] + df['HARRIS (D)']) <= 100)
-    ]
+    # Historical error component (reduced weight)
+    historical_component = hist_error * 0.3  # Reduced from 0.5
     
-    # Calculate undecided/other voters
-    df['Undecided'] = 100 - df['TRUMP (R)'] - df['HARRIS (D)']
+    # Time uncertainty with dampened effect
+    time_uncertainty = min((days_to_election / 365) * 0.2, 0.15)  # Capped at 0.15
     
-    # Allocate undecided voters
-    df['TRUMP_ADJ'], df['HARRIS_ADJ'] = zip(*df.apply(
-        lambda row: allocate_undecided_sophisticated(
-            row['TRUMP (R)'], 
-            row['HARRIS (D)'], 
-            row['Undecided'],
-            row['Historical_Error']
-        ), 
-        axis=1
-    ))
+    # Sample size adjustment with reduced impact
+    sample_size_factor = np.sqrt(500 / max(sample_size, 100))  # Changed from 1000 to 500
     
-    # Calculate weights
-    df['Weight'] = df.apply(calculate_poll_weight, axis=1)
+    # Combine all sources of uncertainty with bounds
+    total_uncertainty = np.sqrt(
+        base_uncertainty**2 +
+        historical_component**2 +
+        time_uncertainty**2
+    ) * sample_size_factor
     
-    # Remove invalid entries
-    df = df.dropna(subset=['TRUMP_ADJ', 'HARRIS_ADJ', 'Weight', 'DATE'])
-    df = df[df['Weight'] > 0]
-    
-    return df
+    # Apply reasonable bounds
+    return np.clip(total_uncertainty, 0.3, 2.0)  # Min 0.3%, Max 2.0%
 
 def monte_carlo_simulation(
-    state_data: Dict[str, pd.DataFrame], 
-    n_sims: int = 250000
-) -> Dict[str, Dict[str, float]]:
-    """Run Monte Carlo simulation with robust error handling and numerical stability checks."""
-    results = {}
+    state_data: Dict[str, pd.DataFrame],
+    n_sims: int = 250000,
+    days_to_election: int = 365
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
+    """Monte Carlo simulation with adjusted uncertainty parameters."""
     
-    # Input validation
-    if not state_data:
-        raise ValueError("No state data provided")
-        
+    # 1. Prepare state data
     states = list(state_data.keys())
     n_states = len(states)
     
-    # Validate correlation matrix with error handling
-    correlation_matrix = np.zeros((n_states, n_states))
-    try:
-        for i, state1 in enumerate(states):
-            for j, state2 in enumerate(states):
-                region1 = BATTLEGROUND_STATES[state1]['region']
-                region2 = BATTLEGROUND_STATES[state2]['region']
-                correlation_matrix[i,j] = REGIONAL_CORRELATIONS[region1][region2]
-        
-        # Ensure matrix is positive definite
-        min_eigenval = np.linalg.eigvals(correlation_matrix).min()
-        if min_eigenval < 0:
-            # Add small constant to diagonal to ensure positive definiteness
-            correlation_matrix += np.eye(n_states) * (abs(min_eigenval) + 1e-6)
-    except Exception as e:
-        print(f"Error in correlation matrix construction: {e}")
-        # Fallback to identity matrix if correlation fails
-        correlation_matrix = np.eye(n_states)
+    if not states:
+        raise ValueError("No valid state data provided")
     
-    # Generate correlated random effects with bounds checking
-    try:
-        random_effects = np.random.multivariate_normal(
-            mean=np.zeros(n_states),
-            cov=correlation_matrix,
-            size=n_sims
-        )
-        
-        # Check for and clean any NaN values
-        if np.any(np.isnan(random_effects)):
-            print("Warning: NaN values detected in random effects, replacing with zeros")
-            random_effects = np.nan_to_num(random_effects)
-            
-        # Bound extreme values
-        random_effects = np.clip(random_effects, -5, 5)
-        
-    except Exception as e:
-        print(f"Error in random effects generation: {e}")
-        # Fallback to simple normal distribution
-        random_effects = np.random.normal(0, 1, (n_sims, n_states))
+    # 2. Calculate correlation matrix
+    correlation_matrix = calculate_state_correlation_matrix(
+        states,
+        BATTLEGROUND_STATES
+    )
     
-    # Add systematic bias with bounds
-    try:
-        systematic_bias = np.random.normal(0, 0.15, n_sims)
-        systematic_bias = np.clip(systematic_bias, -0.5, 0.5)
-    except Exception as e:
-        print(f"Error in systematic bias generation: {e}")
-        systematic_bias = np.zeros(n_sims)
+    # 3. Generate random effects with reduced variance
+    df_t = 10  # Increased from 7 for slightly thinner tails
+    random_effects = np.random.standard_t(df=df_t, size=(n_sims, n_states))
+    random_effects = np.dot(
+        random_effects * 0.8,  # Scale down random effects
+        np.linalg.cholesky(correlation_matrix).T
+    )
     
-    # Run simulations with error checking
+    # 4. Generate systematic effects with reduced magnitude
+    systematic_bias = np.random.normal(0, 0.15, n_sims)  # Reduced from 0.25
+    incumbent_effect = np.random.normal(-0.05, 0.1, n_sims)  # Reduced from (-0.1, 0.2)
+    
+    # 5. Initialize results array
     state_results = np.zeros((n_sims, n_states))
     
+    # 6. Process each state
     for i, state in enumerate(states):
         df = state_data[state]
-        if df is None or df.empty:
+        if df.empty:
             continue
-            
-        try:
-            # Calculate weighted mean with error handling
-            weights = df['Weight'].values
-            # Normalize weights to prevent numerical issues
-            weights = weights / np.sum(weights)
-            
-            trump_vals = df['TRUMP_ADJ'].values
-            harris_vals = df['HARRIS_ADJ'].values
-            
-            # Check for invalid values
-            valid_mask = ~(np.isnan(trump_vals) | np.isnan(harris_vals))
-            if not np.any(valid_mask):
-                print(f"Warning: No valid data for {state}")
-                continue
-                
-            # Use only valid data points
-            trump_mean = np.average(trump_vals[valid_mask], weights=weights[valid_mask])
-            harris_mean = np.average(harris_vals[valid_mask], weights=weights[valid_mask])
-            
-            # Calculate effective sample size safely
-            n_eff = np.sum(weights)**2 / np.sum(weights**2)
-            n_eff = max(10, min(n_eff, len(weights)))  # Bound between 10 and n
-            
-            # Calculate historical error safely
-            hist_errors = BATTLEGROUND_STATES[state]['poll_errors']
-            historical_error = np.clip(
-                0.7 * hist_errors['2020'] +
-                0.2 * hist_errors['2016'] +
-                0.1 * hist_errors['2012'],
-                0.5,  # minimum error
-                10.0  # maximum error
-            )
-            
-            # Combine uncertainty sources with bounds
-            polling_error = 0.5  # Base polling error
-            total_error = np.sqrt(
-                polling_error**2 + 
-                (historical_error * 0.3)**2 +
-                (100/n_eff)
-            )
-            total_error = np.clip(total_error, 0.5, 10.0)
-            
-            # Generate state results with bounds
-            state_results[:,i] = np.clip(
-                trump_mean - harris_mean +
-                random_effects[:,i] * total_error +
-                systematic_bias * historical_error * 0.1,
-                -20,  # max margin
-                20    # min margin
-            )
-            
-        except Exception as e:
-            print(f"Error processing {state}: {e}")
-            # Use national average as fallback
-            state_results[:,i] = np.random.normal(0, 3, n_sims)
+        
+        # Calculate weighted polling average
+        weights = df['Weight'].values
+        margins = df['TRUMP (R)'].values - df['HARRIS (D)'].values
+        mean_margin = np.average(margins, weights=weights)
+        
+        # Calculate uncertainty with new constraints
+        total_uncertainty = calculate_total_uncertainty(
+            state=state,
+            uncertainty=np.std(margins),
+            hist_error=BATTLEGROUND_STATES[state]['poll_errors']['2020'],
+            sample_size=len(df),
+            days_to_election=days_to_election
+        )
+        
+        # Generate state results with reduced multipliers
+        state_results[:,i] = (
+            mean_margin +  # Base margin
+            random_effects[:,i] * total_uncertainty +  # State-specific variation
+            systematic_bias * 0.15 +  # Reduced from 0.2
+            incumbent_effect * 0.1   # Reduced from 0.15
+        )
     
-    # Calculate electoral votes with error handling
-    try:
-        ev_results = calculate_electoral_votes(state_results, states)
-    except Exception as e:
-        print(f"Error in EV calculation: {e}")
-        ev_results = {
-            'TrumpEV': 0,
-            'TrumpEV_std': 0,
-            'TrumpEV_CI': (0, 0),
-            'HarrisEV': 0,
-            'TrumpProb': 0.5,
-            'HarrisProb': 0.5,
-            'EVDistribution': np.zeros(n_sims),
-            'Recount_Probability': 0
+    # 7. Calculate state-level results
+    results = {}
+    for i, state in enumerate(states):
+        results[state] = {
+            'MeanMargin': np.mean(state_results[:,i]),
+            'CI': np.percentile(state_results[:,i], [5, 95]),
+            'TrumpProb': np.mean(state_results[:,i] > 0),
+            'HarrisProb': np.mean(state_results[:,i] < 0),
+            'Volatility': np.std(state_results[:,i])
         }
     
-    # Process state-level results with error handling
-    for i, state in enumerate(states):
-        try:
-            mean_margin = np.mean(state_results[:,i])
-            ci = np.percentile(state_results[:,i], [5, 95])
-            trump_win_prob = np.mean(state_results[:,i] > 0)
-            
-            results[state] = {
-                'MeanMargin': mean_margin,
-                'CI': ci,
-                'TrumpProb': trump_win_prob,
-                'HarrisProb': 1 - trump_win_prob
-            }
-        except Exception as e:
-            print(f"Error calculating results for {state}: {e}")
-            results[state] = {
-                'MeanMargin': 0,
-                'CI': (-3, 3),
-                'TrumpProb': 0.5,
-                'HarrisProb': 0.5
-            }
+    # 8. Calculate electoral college results
+    ev_results = calculate_electoral_votes(state_results, states)
+    
+    # 9. Add diagnostics to results
+    ev_results.update({
+        'Correlation_Matrix': correlation_matrix,
+        'Total_Uncertainty': {
+            state: results[state]['Volatility'] 
+            for state in states
+        }
+    })
     
     return results, ev_results
-    
+
 def calculate_electoral_votes(
     state_results: np.ndarray, 
     states: List[str]
@@ -563,6 +770,34 @@ def calculate_electoral_votes(
         'EVDistribution': trump_ev,
         'Recount_Probability': recount_zone
     }
+
+def process_simulation_results(
+    state_results: np.ndarray,
+    states: List[str]
+) -> Dict[str, Dict[str, float]]:
+    """Process raw simulation results into final state-level statistics."""
+    results = {}
+    
+    for i, state in enumerate(states):
+        # Calculate mean margin
+        mean_margin = np.mean(state_results[:,i])
+        
+        # Calculate confidence intervals
+        ci = np.percentile(state_results[:,i], [5, 95])
+        
+        # Calculate win probabilities
+        trump_win_prob = np.mean(state_results[:,i] > 0)
+        
+        # Store results
+        results[state] = {
+            'MeanMargin': mean_margin,
+            'CI': ci,
+            'TrumpProb': trump_win_prob,
+            'HarrisProb': 1 - trump_win_prob,
+            'Volatility': np.std(state_results[:,i])
+        }
+        
+    return results
 
 def visualize_results(
     state_results: Dict[str, Dict[str, float]], 
@@ -680,8 +915,8 @@ def visualize_results(
     ax2 = fig.add_subplot(gs[1])
     ev_dist = ev_results['EVDistribution']
     
-    # Adjust number of bins for smoother distribution with 90% CI
-    n_bins = 35  # Reduced from 40 for smoother appearance
+    # Adjust number of bins for smoother distribution
+    n_bins = 35
     counts, bins, patches = ax2.hist(ev_dist, bins=n_bins, density=True, alpha=0.5,
                                    color='gray', edgecolor='white',
                                    linewidth=1)
@@ -702,22 +937,10 @@ def visualize_results(
     ax2.axvline(x=ev_ci[1], color='black', linestyle=':', linewidth=1.5,
                 alpha=0.5)
     
-    bin_width = bins[1] - bins[0]
-    percentage_counts = counts * bin_width * 100
-    
-    # Add count labels with adjusted threshold
-    threshold = max(percentage_counts) * 0.12  # Reduced threshold for more labels
-    for i, (count, patch) in enumerate(zip(percentage_counts, patches)):
-        if count > threshold:
-            bin_center = (bins[i] + bins[i+1]) / 2
-            ax2.text(bin_center, count + max(percentage_counts) * 0.02,
-                    f"{int(count * len(ev_dist)/100)}",
-                    ha='center', va='bottom', fontsize=10)
-    
-    # Add KDE overlay with adjusted bandwidth
+    # Add KDE overlay
     kde = gaussian_kde(ev_dist, bw_method='silverman')
     x_range = np.linspace(bins[0], bins[-1], 200)
-    kde_values = kde(x_range) * bin_width * 100
+    kde_values = kde(x_range)
     ax2.plot(x_range, kde_values, color='black', 
              linewidth=2, alpha=0.8)
     
@@ -726,12 +949,11 @@ def visualize_results(
                 linewidth=2, alpha=0.8,
                 label='270 EV Threshold')
     
-    max_percentage = max(kde_values)
-    
-    # Add region labels with arrows
+    # Add annotations
+    max_kde = max(kde_values)
     ax2.annotate('Harris Wins\n(<270 EV)', 
-                xy=(250, max_percentage/2),
-                xytext=(220, max_percentage * 0.7),
+                xy=(250, max_kde/2),
+                xytext=(220, max_kde * 0.7),
                 ha='center', color=colors['harris'],
                 fontsize=16, fontweight='bold',
                 arrowprops=dict(arrowstyle='->',
@@ -739,31 +961,21 @@ def visualize_results(
                               lw=2))
     
     ax2.annotate('Trump Wins\n(≥270 EV)', 
-                xy=(290, max_percentage/2),
-                xytext=(320, max_percentage * 0.7),
+                xy=(290, max_kde/2),
+                xytext=(320, max_kde * 0.7),
                 ha='center', color=colors['trump'],
                 fontsize=16, fontweight='bold',
                 arrowprops=dict(arrowstyle='->',
                               color=colors['trump'],
                               lw=2))
     
-    # Add CI range annotation
-    ax2.annotate(f'90% CI: {ev_ci[0]:.0f}-{ev_ci[1]:.0f} EV',
-                xy=(270, max_percentage * 0.95),
-                xytext=(270, max_percentage * 1.05),
-                ha='center', va='bottom',
-                fontsize=14, fontweight='bold')
-    
     ax2.set_title('Electoral Vote Distribution', 
                   pad=20, fontsize=18, fontweight='bold')
     ax2.set_xlabel('Electoral Votes', fontsize=16)
-    ax2.set_ylabel('Percentage of Simulations (%)', fontsize=16)
-    ax2.tick_params(axis='both', labelsize=14)
-    ax2.grid(True, alpha=0.3)
+    ax2.set_ylabel('Density', fontsize=16)
     
     # Win probability bars
     ax3 = fig.add_subplot(gs[2])
-    
     trump_prob = ev_results['TrumpProb']
     harris_prob = ev_results['HarrisProb']
     
@@ -771,7 +983,7 @@ def visualize_results(
     ax3.barh(0, harris_prob * 100, height=0.4, color=colors['harris'], 
              alpha=0.7, left=trump_prob * 100)
     
-    # Larger probability labels
+    # Add probability labels
     ax3.text(trump_prob * 50, 0, f"TRUMP\n{trump_prob*100:.1f}%", 
              ha='center', va='center', color='white', 
              fontsize=18, fontweight='bold')
@@ -783,7 +995,6 @@ def visualize_results(
     ax3.set_title('Win Probability', pad=20, fontsize=18, fontweight='bold')
     ax3.set_xlim(0, 100)
     ax3.set_yticks([])
-    ax3.set_xlabel('Probability (%)', fontsize=16)
     
     # Summary text
     summary_ax = fig.add_subplot(gs[3])
@@ -797,64 +1008,90 @@ def visualize_results(
                    fontsize=18, fontweight='bold', transform=summary_ax.transAxes)
     summary_ax.axis('off')
     
-    # Attribution
+    # Add attribution
     plt.figtext(0.02, 0.02, 
-                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by Tatsu Ikeda, https://github.com/tatsuikeda/rcp_polling_data_processor", 
+                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 
                 fontsize=14, alpha=0.7)
-    plt.figtext(0.98, 0.02,
-                "Source: RealClearPolitics polling data with historical error adjustment",
-                fontsize=14, alpha=0.7, ha='right')
     
     plt.tight_layout()
     plt.show()
 
 def main():
+    """Main execution function for the polling analysis."""
     try:
+        print("Initializing 2024 Election Polling Analysis...")
         driver = setup_driver()
         state_data = {}
         
         # Fetch and process data for each state
+        print("\nFetching polling data for battleground states...")
         for state in BATTLEGROUND_STATES:
+            print(f"\nProcessing {state}...")
             df = fetch_polling_data(driver, state)
             if df is not None:
                 processed_df = process_state_data(df)
                 if processed_df is not None:
                     state_data[state] = processed_df
-                    print(f"Successfully processed data for {state}")
+                    n_polls = len(processed_df)
+                    print(f"✓ Successfully processed {n_polls} polls for {state}")
                 else:
-                    print(f"Failed to process data for {state}")
+                    print(f"✗ Failed to process data for {state}")
             else:
-                print(f"Failed to fetch data for {state}")
+                print(f"✗ Failed to fetch data for {state}")
         
-        # Run Monte Carlo simulation
+        # Validate we have enough data to proceed
+        if not state_data:
+            raise ValueError("No valid polling data was collected for any state")
+        
+        print("\nRunning Monte Carlo simulation...")
+        # Run Monte Carlo simulation with modern enhancements
         state_results, ev_results = monte_carlo_simulation(state_data)
         
         # Print detailed results
-        print("\nState-by-State Results:")
-        for state in state_results:
+        print("\n=== State-by-State Results ===")
+        for state in sorted(state_results.keys()):
             result = state_results[state]
             print(f"\n{state}:")
-            print(f"Mean Margin: {result['MeanMargin']:.2f}%")
-            print(f"95% CI: ({result['CI'][0]:.2f}%, {result['CI'][1]:.2f}%)")
+            print(f"Mean Margin: {result['MeanMargin']:+.1f}%")
+            print(f"90% Confidence Interval: ({result['CI'][0]:+.1f}%, {result['CI'][1]:+.1f}%)")
             print(f"Win Probability - Trump: {result['TrumpProb']*100:.1f}%, " +
                   f"Harris: {result['HarrisProb']*100:.1f}%")
         
-        print("\nElectoral College Projection:")
+        print("\n=== Electoral College Projection ===")
         print(f"Trump: {ev_results['TrumpEV']:.1f} ± {ev_results['TrumpEV_std']:.1f} electoral votes")
-        print(f"95% CI: ({ev_results['TrumpEV_CI'][0]:.1f}, {ev_results['TrumpEV_CI'][1]:.1f})")
+        print(f"90% CI: ({ev_results['TrumpEV_CI'][0]:.1f}, {ev_results['TrumpEV_CI'][1]:.1f})")
         print(f"Harris: {ev_results['HarrisEV']:.1f} electoral votes")
         print(f"Win Probability - Trump: {ev_results['TrumpProb']*100:.1f}%")
         print(f"Win Probability - Harris: {ev_results['HarrisProb']*100:.1f}%")
         print(f"Probability of Recount Scenario: {ev_results['Recount_Probability']*100:.1f}%")
         
-        # Visualize results
+        # Generate visualizations
+        print("\nGenerating visualizations...")
         visualize_results(state_results, ev_results)
         
+        print("\nAnalysis complete!")
+        
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\nAn error occurred during execution: {str(e)}")
+        import traceback
+        print("\nFull error trace:")
+        traceback.print_exc()
     finally:
         if 'driver' in locals():
+            print("\nClosing web driver...")
             driver.quit()
 
 if __name__ == "__main__":
+    print("\n=== 2024 Presidential Election Polling Analysis ===")
+    print("Version 1.0 - Modern Statistical Methods")
+    print("Initializing...\n")
+    
+    # Set random seed for reproducibility while maintaining uncertainty
+    np.random.seed(int(time.time()))
+    
+    # Set plotting style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.rcParams.update(PLOT_STYLE)
+    
+    # Run main program
     main()

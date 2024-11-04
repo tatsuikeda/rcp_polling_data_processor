@@ -108,10 +108,11 @@ The script will:
 
 ## Mathematical and Statistical Methods
 
-This script employs sophisticated statistical techniques to process and analyze polling data:
+This script employs both traditional and modern statistical techniques to process and analyze polling data:
 
-### 1. Pollster Quality Ratings
+### 1. Traditional Poll Aggregation Methods
 
+#### Pollster Quality Ratings
 Pollsters are weighted based on their historical accuracy and methodology:
 
 ```python
@@ -129,8 +130,7 @@ POLLSTER_RATINGS = {
 }
 ```
 
-### 2. Time Decay Weighting
-
+#### Time Decay Weighting
 Recent polls are given more weight using an exponential decay function:
 
 ```python
@@ -138,8 +138,7 @@ POLL_DECAY_RATE = 0.05  # Decay rate parameter
 time_weight = 1 / (1 + POLL_DECAY_RATE * days_old)
 ```
 
-### 3. Sample Size and Type Weighting
-
+#### Sample Size and Type Weighting
 Polls are weighted based on sample size and likely voter (LV) vs. registered voter (RV) methodology:
 
 ```python
@@ -147,8 +146,7 @@ base_weight = 1 / np.sqrt(1/sample_size) if sample_size > 0 else 0
 sample_type_weight = 1.5 if 'LV' in str(row['SAMPLE']) else 1.0
 ```
 
-### 4. Historical Error Adjustment
-
+#### Historical Error Adjustment
 Each state's historical polling errors are weighted to account for systematic bias:
 
 ```python
@@ -159,8 +157,7 @@ weighted_error = (
 )
 ```
 
-### 5. Regional Correlations
-
+#### Regional Correlations
 State outcomes are correlated based on geographic regions:
 
 ```python
@@ -172,8 +169,7 @@ REGIONAL_CORRELATIONS = {
 }
 ```
 
-### 6. Undecided Voter Allocation
-
+#### Undecided Voter Allocation
 Sophisticated allocation of undecided voters considering:
 - Challenger advantage (reduced in final weeks)
 - Current polling strength
@@ -187,45 +183,145 @@ error_adjustment = np.tanh(historical_error / 10) * 0.04
 challenger_share = min(max(challenger_share - error_adjustment, 0.48), 0.56)
 ```
 
-### 7. Monte Carlo Simulation
+### 2. Modern Statistical Enhancements
 
-Comprehensive simulation incorporating:
-- T-distribution with fat tails (df=20)
-- Correlated state outcomes
-- Systematic bias term
-- Multiple sources of uncertainty:
-  - Base polling error
-  - Historical error
-  - Sample size effects
-
-### 8. Confidence Interval Calculation
-
-90% confidence intervals are used for:
-- State margins
-- Electoral vote projections
-- Win probabilities
-
-This provides a balance between capturing uncertainty and maintaining practical interpretability.
-
-### 9. Poll Aggregation Weight Formula
-
-The final weight for each poll combines multiple factors:
+#### Regularization Techniques
+- LASSO (Least Absolute Shrinkage and Selection Operator)
+- Ridge Regression
+- Elastic Net
+- Regularized correlation matrices for state relationships
 
 ```python
-total_weight = (base_weight * 
-               time_weight * 
-               sample_type_weight * 
-               pollster_rating * 
-               historical_error_adjustment)
+models = {
+    'lasso': LassoCV(cv=5, random_state=42),
+    'ridge': RidgeCV(cv=5),
+    'elastic_net': ElasticNetCV(cv=5, random_state=42)
+}
 ```
 
-### 10. Recount Probability
+#### Machine Learning Ensemble
+- Random Forest Regressor
+- Gradient Boosting Regressor
+- Weighted model averaging
+- Cross-validation for model performance
+
+```python
+models.update({
+    'rf': RandomForestRegressor(n_estimators=100, random_state=42),
+    'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
+})
+```
+
+#### Hierarchical/Multilevel Modeling
+- Region-level effects
+- Shrinkage estimation
+- Borrowing strength across similar states
+- Prior strength adjustment
+
+```python
+shrinkage = weights[i] / (weights[i] + 100)  # 100 is prior strength
+shrunk_estimate = (
+    shrinkage * raw_estimate + 
+    (1 - shrinkage) * (results.params[0] + region_effect)
+)
+```
+
+#### Bootstrap Methods
+- Resampling with replacement
+- Robust confidence intervals
+- Non-parametric uncertainty estimation
+
+```python
+def bootstrap_confidence_intervals(data: pd.DataFrame, n_bootstrap: int = 1000) -> dict:
+    results = []
+    for _ in range(n_bootstrap):
+        bootstrap_sample = data.sample(n=len(data), replace=True)
+        weighted_mean = np.average(
+            bootstrap_sample['margin'], 
+            weights=bootstrap_sample['Weight']
+        )
+        results.append(weighted_mean)
+```
+
+#### Missing Data Imputation
+- Iterative imputation
+- Multiple regression iterations
+- Preservation of relationships between variables
+- Bounded value constraints
+
+```python
+imputer = IterativeImputer(
+    max_iter=10,
+    random_state=42,
+    min_value=0,
+    max_value=100
+)
+```
+
+### 3. Combined Monte Carlo Simulation
+
+The simulation now integrates both traditional and modern methods:
+
+#### Traditional Components
+- Poll weights based on quality, recency, and sample size
+- Historical error adjustments
+- Regional correlations
+- Undecided voter allocation
+
+#### Modern Enhancements
+- Ensemble model predictions
+- Hierarchical state estimates
+- Bootstrap confidence intervals
+- Regularized correlation structure
+
+#### Multiple Sources of Uncertainty
+- Base polling error
+- Historical error patterns
+- Sampling uncertainty
+- Model uncertainty
+- Systematic bias
+
+```python
+state_results[:,i] = (
+    mean_estimate + 
+    random_effects[:,i] * uncertainty +
+    systematic_bias * hist_error * 0.1
+)
+```
+
+### 4. Final Estimation Formula
+
+The complete weight calculation combines all factors:
+
+```python
+# Traditional poll weight
+base_poll_weight = (
+    base_weight * 
+    time_weight * 
+    sample_type_weight * 
+    pollster_rating * 
+    historical_error_adjustment
+)
+
+# Combined modern estimates
+combined_estimates[state] = (
+    0.4 * ensemble_predictions[state] +
+    0.4 * hierarchical_estimates[state] +
+    0.2 * bootstrap_results[state]['mean']
+)
+```
+
+### 5. Recount Probability
 
 Calculates the probability of extremely close electoral college outcomes:
 
 ```python
 recount_zone = np.sum(np.abs(trump_ev - 269.5) <= 5) / n_sims
 ```
+
+## Note on Statistical Methods
+
+This implementation represents a hybrid approach combining traditional polling analysis with modern machine learning and statistical methods. The traditional methods provide a strong foundation in polling methodology, while the modern enhancements add robustness and sophisticated uncertainty quantification. This combination helps balance different sources of information and provides more reliable estimates of electoral outcomes.
 
 ## Visualization
 
