@@ -2,7 +2,7 @@
 
 This project is a Python script that processes polling data from RealClearPolitics for the 2024 US Presidential Election, focusing on battleground states. It aggregates poll results, calculates probabilities based on confidence intervals, and provides a visual representation of the polling analysis.
 
-![Figure_1](https://github.com/user-attachments/assets/9398ee96-ce10-4937-a227-aeb500afbe4e)
+![Figure_11111](https://github.com/user-attachments/assets/8e67df25-210e-4bc5-ab4d-667ffaac3b59)
 
 ## Author
 
